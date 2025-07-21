@@ -217,7 +217,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['task_id_toggle_status
     exit; // Penting untuk menghentikan eksekusi setelah AJAX
 }
 
-// PROSES DELETE TUGAS
+// PROSES DELETE TUGAS (Termasuk dari history)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_task_id'])) {
     $task_id = $_POST['delete_task_id'];
     
@@ -295,7 +295,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_acara'])) {
     }
 }
 
-// PROSES DELETE ACARA
+// PROSES DELETE ACARA (Termasuk dari history)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_event_id'])) {
     $event_id = $_POST['delete_event_id'];
     
@@ -428,7 +428,7 @@ $motivasi = [
   'Disiplin adalah kunci untuk meraih impian. Mulai hari ini!',
   'Kecil tapi rutin, lebih baik daripada besar tapi tak pernah.'
 ];
-$mot_today = $motivasi[date('z') % count($motivasi)];
+$mot_today = $motivasi[date('z') % count(array_keys($motivasi))]; // Perbaikan: Gunakan array_keys untuk count agar lebih robust
 
 
 // Statistik Ringkasan
@@ -633,6 +633,13 @@ unset($_SESSION['error_message']);
             flex-direction: column; /* Stack buttons vertically */
             align-items: flex-end; /* Align buttons to the right within their column */
         }
+        /* Style for history delete button alignment */
+        .history-item-actions {
+            flex-shrink: 0;
+            margin-left: 10px; /* Adjust spacing */
+            align-self: center; /* Vertically center the button in history item */
+        }
+
         .task-item h5, .event-item h5 {
             margin-bottom: 5px;
             font-weight: 600;
@@ -893,6 +900,11 @@ unset($_SESSION['error_message']);
             transform-origin: 50% 50%;
             transition: stroke-dashoffset 1s ease-out;
         }
+        .progress-circle-text {
+            font-size: 1.8rem;
+            font-weight: 700;
+            fill: var(--primary-color);
+        }
         /* Ensure primary-color-rgb is defined for rgba usage */
         body:not(.theme-dark) { --primary-color-rgb: 0, 123, 255; --danger-color-rgb: 220, 53, 69; }
         body.theme-dark { --primary-color-rgb: 74, 144, 226; --danger-color-rgb: 231, 76, 60; }
@@ -1040,7 +1052,7 @@ unset($_SESSION['error_message']);
   <div class="row g-4">
     <div class="col-lg-3 sidebar-col">
       <div class="calendar-edlink mb-4 animate__animated animate__fadeInLeft">
-        <div class="mb-3 p-2 rounded bg-gradient" style="background:linear-gradient(90deg, var(--primary-color) 60%,#6dd5ed 100%);color:#6dd5ed;box-shadow:0 2px 8px rgba(var(--primary-color-rgb),0.2);">
+        <div class="mb-3 p-2 rounded bg-gradient" style="background:linear-gradient(90deg, var(--primary-color) 60%,#6dd5ed 100%);color:#fff;box-shadow:0 2px 8px rgba(var(--primary-color-rgb),0.2);">
           <i class="fa-solid fa-quote-left"></i> <span class="fw-semibold"><?= $mot_today ?></span>
         </div>
         <div class="d-flex justify-content-between align-items-center mb-2">
@@ -1085,7 +1097,8 @@ unset($_SESSION['error_message']);
                   <svg class="progress-circle" viewBox="0 0 36 36">
                       <path class="progress-circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                       <path class="progress-circle-fg" stroke-dasharray="<?= $progress_percentage ?>, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                      </svg>
+                      <text x="18" y="20.35" class="progress-circle-text"><?= $progress_percentage ?>%</text>
+                  </svg>
               </div>
               <p>Total Tugas: <span class="fw-bold text-primary"><?= $total_tasks ?></span></p>
               <p>Tugas Selesai: <span class="fw-bold text-success"><?= $done_tasks ?></span></p>
@@ -1268,7 +1281,7 @@ unset($_SESSION['error_message']);
                 <?php else: ?>
                     <ul class="list-group mb-3">
                         <?php foreach($completed_tasks as $t): ?>
-                            <li class="list-group-item d-flex align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;">
+                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;">
                                 <div class="task-item-content">
                                     <h5 class="mb-0 text-decoration-line-through text-muted"><?= esc($t['nama_tugas']) ?></h5>
                                     <p class="small text-muted mb-1">
@@ -1278,6 +1291,14 @@ unset($_SESSION['error_message']);
                                         <p class="small"><?= esc($t['deskripsi']) ?></p>
                                     <?php endif; ?>
                                     <span class="status-badge status-selesai">Selesai</span>
+                                </div>
+                                <div class="history-item-actions">
+                                    <form method="POST" action="dashboard.php?display_month=<?= $display_month ?>&display_year=<?= $display_year ?>" class="d-inline">
+                                        <input type="hidden" name="delete_task_id" value="<?= $t['id'] ?>">
+                                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Yakin ingin menghapus tugas ini dari riwayat?');">
+                                            <i class="fa-solid fa-trash-alt"></i> Hapus
+                                        </button>
+                                    </form>
                                 </div>
                             </li>
                         <?php endforeach; ?>
@@ -1290,7 +1311,7 @@ unset($_SESSION['error_message']);
                 <?php else: ?>
                     <ul class="list-group">
                         <?php foreach($past_events as $a): ?>
-                            <li class="list-group-item d-flex align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;">
+                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;">
                                 <div class="event-item-content">
                                     <h5 class="mb-0"><?= esc($a['nama_acara']) ?></h5>
                                     <p class="small text-muted mb-1">Tanggal: <?= esc(tgl_indo_edlink($a['tanggal'])) ?></p>
@@ -1298,6 +1319,14 @@ unset($_SESSION['error_message']);
                                         <p class="small"><?= esc($a['deskripsi']) ?></p>
                                     <?php endif; ?>
                                     <span class="badge bg-secondary text-white">Terlaksana</span>
+                                </div>
+                                <div class="history-item-actions">
+                                    <form method="POST" action="dashboard.php?display_month=<?= $display_month ?>&display_year=<?= $display_year ?>" class="d-inline">
+                                        <input type="hidden" name="delete_event_id" value="<?= $a['id'] ?>">
+                                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Yakin ingin menghapus acara ini dari riwayat?');">
+                                            <i class="fa-solid fa-trash-alt"></i> Hapus
+                                        </button>
+                                    </form>
                                 </div>
                             </li>
                         <?php endforeach; ?>
@@ -1497,7 +1526,7 @@ unset($_SESSION['error_message']);
                 fetch('weekly_stats.php')
                     .then(response => {
                         if (!response.ok) {
-                            throw new Error('Network response was not ok: ' + response.statusText);
+                            throw new Error('Network response for cek_notif.php was not ok');
                         }
                         return response.json();
                     })
