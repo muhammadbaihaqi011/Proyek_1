@@ -1,0 +1,36 @@
+<<<<<<< HEAD
+# Dependencies
+.psci_modules
+.spago
+bower_components
+node_modules
+
+# Generated files
+.psci
+output
+=======
+# Composer
+/vendor/
+/composer.lock
+
+# PHP
+*.phar
+*.php~
+*.php-bak
+*.log
+/cache/
+/tmp/
+/web/assets/compiled/
+.env # jika menggunakan file environment
+
+# IDE-specific files
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# OS generated files
+.DS_Store
+Thumbs.db
+>>>>>>> c1638683ba4984ababed3402e46adf036b0c583a
