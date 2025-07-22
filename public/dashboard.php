@@ -56,7 +56,7 @@ $display_month = isset($_GET['display_month']) ? (int)$_GET['display_month'] : (
 $display_year = isset($_GET['display_year']) ? (int)$_GET['display_year'] : (int)$now->format('Y');
 
 // Create a DateTime object for the first day of the display month
-$display_date_obj = new DateTime("{$display_year}-{$display_month}-01");
+$display_date_obj = (clone $display_date_obj)->modify('first day of this month');
 
 // Determine the Monday of the week containing the first day of the display month
 // This will be the start of our calendar display for the week rows
@@ -110,7 +110,7 @@ $dates_with_activity = array_unique($dates_with_activity);
 
 // === DATA UNTUK DAFTAR TUGAS & ACARA LENGKAP DI SIDEBAR KANAN ===
 $all_tasks = [];
-$stmt_all_tasks = $conn->prepare("SELECT id, nama_tugas, deskripsi, deadline, status FROM tugas WHERE user_id = ? ORDER BY deadline ASC");
+$stmt_all_tasks = $conn->prepare("SELECT id, nama_tugas, deskripsi, deadline, status FROM tugas WHERE user_id = ? AND status != 'selesai' ORDER BY deadline ASC");
 if ($stmt_all_tasks) {
     $stmt_all_tasks->bind_param("i", $user_id);
     $stmt_all_tasks->execute();
@@ -124,7 +124,7 @@ if ($stmt_all_tasks) {
 }
 
 $all_events = [];
-$stmt_all_events = $conn->prepare("SELECT id, nama_acara, deskripsi, tanggal FROM acara WHERE user_id = ? ORDER BY tanggal ASC");
+$stmt_all_events = $conn->prepare("SELECT id, nama_acara, deskripsi, tanggal FROM acara WHERE user_id = ? AND tanggal >= CURDATE() ORDER BY tanggal ASC");
 if ($stmt_all_events) {
     $stmt_all_events->bind_param("i", $user_id);
     $stmt_all_events->execute();
@@ -140,7 +140,7 @@ if ($stmt_all_events) {
 // --- History Data ---
 $completed_tasks = [];
 $stmt_completed_tasks = $conn->prepare("SELECT id, nama_tugas, deskripsi, deadline, status FROM tugas WHERE user_id = ? AND status = 'selesai' ORDER BY deadline DESC");
-if ($stmt_completed_tasks) {
+if ($stmt_completed_tasks === false) { error_log("Error preparing completed tasks query: " . $conn->error); } else {
     $stmt_completed_tasks->bind_param("i", $user_id);
     $stmt_completed_tasks->execute();
     $completed_tasks_result = $stmt_completed_tasks->get_result();
@@ -148,13 +148,11 @@ if ($stmt_completed_tasks) {
         $completed_tasks[] = $t;
     }
     $stmt_completed_tasks->close();
-} else {
-    error_log("Error preparing completed tasks query: " . $conn->error);
 }
 
 $past_events = [];
 $stmt_past_events = $conn->prepare("SELECT id, nama_acara, deskripsi, tanggal FROM acara WHERE user_id = ? AND tanggal < CURDATE() ORDER BY tanggal DESC");
-if ($stmt_past_events) {
+if ($stmt_past_events === false) { error_log("Error preparing past events query: " . $conn->error); } else {
     $stmt_past_events->bind_param("i", $user_id);
     $stmt_past_events->execute();
     $past_events_result = $stmt_past_events->get_result();
@@ -162,8 +160,6 @@ if ($stmt_past_events) {
         $past_events[] = $a;
     }
     $stmt_past_events->close();
-} else {
-    error_log("Error preparing past events query: " . $conn->error);
 }
 
 
@@ -194,9 +190,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_tugas'])) {
     }
 }
 
-// PROSES UPDATE STATUS TUGAS (MELALUI AJAX/FORM)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['task_id_toggle_status'])) {
-    $task_id = $_POST['task_id_toggle_status'];
+// PROSES UPDATE STATUS TUGAS (MELALUI AJAX)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'toggle_task_status') {
+    $task_id = $_POST['task_id'];
     $current_status = $_POST['current_status'];
     $new_status = ($current_status === 'selesai') ? 'belum' : 'selesai';
 
@@ -207,34 +203,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['task_id_toggle_status
             echo json_encode(['success' => true, 'new_status' => $new_status]);
         } else {
             echo json_encode(['success' => false, 'message' => 'Gagal update status: ' . $stmt->error]);
-            error_log("Error updating task status: " . $stmt->error);
+            error_log("Error updating task status (AJAX): " . $stmt->error);
         }
         $stmt->close();
     } else {
-        echo json_encode(['success' => false, 'message' => 'Gagal menyiapkan query update status: ' . $conn->error]);
-        error_log("Error preparing update status query: " . $conn->error);
+        echo json_encode(['success' => false, 'message' => 'Gagal menyiapkan query update status (AJAX): ' . $conn->error]);
+        error_log("Error preparing update status query (AJAX): " . $conn->error);
     }
-    exit; // Penting untuk menghentikan eksekusi setelah AJAX
+    exit;
 }
 
-// PROSES DELETE TUGAS (Termasuk dari history)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_task_id'])) {
-    $task_id = $_POST['delete_task_id'];
-    
-    $stmt = $conn->prepare("DELETE FROM tugas WHERE id = ? AND user_id = ?");
-    if ($stmt) {
-        $stmt->bind_param("ii", $task_id, $user_id);
-        if ($stmt->execute()) {
-            header('Location: dashboard.php?display_month=' . $display_month . '&display_year=' . $display_year);
-            exit;
-        } else {
-            error_log("Error deleting task: " . $stmt->error);
-            // Anda bisa menampilkan pesan error ke user jika diperlukan
-        }
-        $stmt->close();
-    } else {
-        error_log("Error preparing delete task query: " . $conn->error);
+// PROSES DELETE TUGAS (MELALUI AJAX)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_task') {
+    $task_ids = $_POST['id']; // Bisa berupa satu ID atau array ID
+    if (!is_array($task_ids)) {
+        $task_ids = [$task_ids];
     }
+    
+    $success = true;
+    $message = [];
+
+    foreach ($task_ids as $task_id) {
+        $stmt = $conn->prepare("DELETE FROM tugas WHERE id = ? AND user_id = ?");
+        if ($stmt) {
+            $stmt->bind_param("ii", $task_id, $user_id);
+            if (!$stmt->execute()) {
+                $success = false;
+                $message[] = "ID {$task_id}: " . $stmt->error;
+                error_log("Error deleting task (AJAX), ID {$task_id}: " . $stmt->error);
+            }
+            $stmt->close();
+        } else {
+            $success = false;
+            $message[] = "Gagal menyiapkan query hapus tugas: " . $conn->error;
+            error_log("Error preparing delete task query (AJAX): " . $conn->error);
+            break; // Hentikan jika persiapan query gagal
+        }
+    }
+    echo json_encode(['success' => $success, 'message' => implode("; ", $message), 'deleted_ids' => $task_ids]);
+    exit;
 }
 
 // PROSES EDIT TUGAS
@@ -295,23 +302,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_acara'])) {
     }
 }
 
-// PROSES DELETE ACARA (Termasuk dari history)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_event_id'])) {
-    $event_id = $_POST['delete_event_id'];
-    
-    $stmt = $conn->prepare("DELETE FROM acara WHERE id = ? AND user_id = ?");
-    if ($stmt) {
-        $stmt->bind_param("ii", $event_id, $user_id);
-        if ($stmt->execute()) {
-            header('Location: dashboard.php?display_month=' . $display_month . '&display_year=' . $display_year);
-            exit;
-        } else {
-            error_log("Error deleting event: " . $stmt->error);
-        }
-        $stmt->close();
-    } else {
-        error_log("Error preparing delete event query: " . $conn->error);
+// PROSES DELETE ACARA (MELALUI AJAX)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_event') {
+    $event_ids = $_POST['id']; // Bisa berupa satu ID atau array ID
+    if (!is_array($event_ids)) {
+        $event_ids = [$event_ids];
     }
+
+    $success = true;
+    $message = [];
+
+    foreach ($event_ids as $event_id) {
+        $stmt = $conn->prepare("DELETE FROM acara WHERE id = ? AND user_id = ?");
+        if ($stmt) {
+            $stmt->bind_param("ii", $event_id, $user_id);
+            if (!$stmt->execute()) {
+                $success = false;
+                $message[] = "ID {$event_id}: " . $stmt->error;
+                error_log("Error deleting event (AJAX), ID {$event_id}: " . $stmt->error);
+            }
+            $stmt->close();
+        } else {
+            $success = false;
+            $message[] = "Gagal menyiapkan query hapus acara: " . $conn->error;
+            error_log("Error preparing delete event query (AJAX): " . $conn->error);
+            break;
+        }
+    }
+    echo json_encode(['success' => $success, 'message' => implode("; ", $message), 'deleted_ids' => $event_ids]);
+    exit;
 }
 
 // PROSES EDIT ACARA
@@ -428,7 +447,7 @@ $motivasi = [
   'Disiplin adalah kunci untuk meraih impian. Mulai hari ini!',
   'Kecil tapi rutin, lebih baik daripada besar tapi tak pernah.'
 ];
-$mot_today = $motivasi[date('z') % count(array_keys($motivasi))]; // Perbaikan: Gunakan array_keys untuk count agar lebih robust
+$mot_today = $motivasi[date('z') % count(array_keys($motivasi))];
 
 
 // Statistik Ringkasan
@@ -477,17 +496,18 @@ unset($_SESSION['error_message']);
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     <style>
         :root {
-            --primary-color: #007bff;
+            --primary-color: #007bff; /* Aksen biru standar Bootstrap */
             --secondary-color: #6c757d;
-            --background-light: #f0f2f5;
-            --card-background: #ffffff;
-            --text-color-dark: #333;
-            --text-color-light: #666;
+            --background-light: #f0f2f5; /* Background sangat terang */
+            --background-dark: #2c3e50; /* Background gelap default */
+            --card-background: #ffffff; /* Putih untuk kartu di light mode */
+            --text-color-dark: #333; /* Teks gelap di light mode */
+            --text-color-light: #666; /* Teks lebih samar di light mode */
             --border-color: #e9ecef;
             --shadow-light: 0 5px 15px rgba(0,0,0,0.08);
             --shadow-medium: 0 10px 30px rgba(0,0,0,0.15);
             --success-color: #28a745;
-            --warning-color: #ffc107; /* Warna oranye/kuning untuk warning */
+            --warning-color: #ffc107;
             --danger-color: #dc3545;
             --info-color: #17a2b8;
             --primary-color-rgb: 0, 123, 255;
@@ -496,12 +516,16 @@ unset($_SESSION['error_message']);
 
         body {
             font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: var(--background-light);
-            padding-top: 70px; /* Space for fixed navbar */
-            transition: background-color 0.3s ease;
+            background-color: var(--background-light); /* Default light theme */
+            color: var(--text-color-dark);
+            padding-top: 70px;
+            min-height: 100vh;
+            overflow-x: hidden;
+            transition: background-color 0.3s ease, color 0.3s ease;
+            position: relative;
         }
 
-        /* Dark Theme */
+        /* Dark Theme overrides */
         body.theme-dark {
             --primary-color: #4a90e2; /* Softer blue for dark theme */
             --secondary-color: #b0b8c0;
@@ -530,11 +554,10 @@ unset($_SESSION['error_message']);
         body.theme-dark .form-control { background-color: #3f5870; color: var(--text-color-dark); border-color: var(--border-color); }
         body.theme-dark .form-control::placeholder { color: var(--text-color-light); }
         body.theme-dark .form-control:focus { border-color: var(--primary-color); box-shadow: 0 0 0 0.25rem rgba(var(--primary-color-rgb), 0.25); }
-        body.theme-dark .btn-primary { background-color: var(--primary-color); border-color: var(--primary-color); }
+        body.theme-dark .btn-primary { background-color: var(--primary-color); border-color: var(--primary-color); color: #fff; }
         body.theme-dark .btn-primary:hover { background-color: #3a80ce; border-color: #3a80ce; }
-        body.theme-dark .btn-success { background-color: var(--success-color); border-color: var(--success-color); }
-        body.theme-dark .btn-success:hover { background-color: #21a65f; border-color: #21a65f; }
-        body.theme-dark .btn-info { background-color: var(--info-color); border-color: var(--info-color); }
+        body.theme-dark .btn-success { background-color: var(--success-color); border-color: var(--success-color); color: #1e1e2e; } /* Teks gelap di dark success */
+        body.theme-dark .btn-info { background-color: var(--info-color); border-color: var(--info-color); color: #1e1e2e; } /* Teks gelap di dark info */
         body.theme-dark .btn-info:hover { background-color: #258cd1; border-color: #258cd1; }
         body.theme-dark .modal-content { background-color: var(--card-background); color: var(--text-color-dark); }
         body.theme-dark .modal-header { background-color: var(--primary-color); color: #ecf0f1; }
@@ -544,26 +567,51 @@ unset($_SESSION['error_message']);
         body.theme-dark .dropdown-item:hover { background-color: #4a6a8a; color: #ecf0f1; }
         body.theme-dark .dropdown-divider { border-top-color: var(--border-color); }
         body.theme-dark .list-group-item { background-color: var(--card-background); color: var(--text-color-dark); border-color: var(--border-color); }
+        body.theme-dark .avatar-upload label { color: var(--primary-color); } /* Dark theme adjustment */
+        body.theme-dark .task-checkbox, body.theme-dark .history-checkbox { border: 2px solid var(--primary-color); } /* Border accent di dark theme */
+        body.theme-dark .task-checkbox:checked::before, body.theme-dark .history-checkbox:checked::before { color: white; } /* Centang putih di dark theme */
+        body.theme-dark .floating-robot { background-color: #4a90e2; } /* Warna robot di dark theme */
+        body.theme-dark .robot-head-small { background-color: #3498db; } /* Warna kepala robot di dark theme */
+        body.theme-dark .robot-eye-small { background-color: #f1c40f; } /* Warna mata robot di dark theme */
+        body.theme-dark .robot-mouth-small { background-color: #e74c3c; } /* Warna mulut robot di dark theme */
+        body.theme-dark .calendar-edlink h4,
+        body.theme-dark .calendar-edlink .weekdays span,
+        body.theme-dark .calendar-edlink .text-secondary {
+            color: var(--text-color-dark) !important;
+        }
+        body.theme-dark .task-item.urgent-task { background-color: #404351 !important; } /* Urgent task highlight in dark mode */
 
 
         .navbar {
-            background-color: var(--primary-color) !important;
+            background-color: var(--primary-color) !important; /* Navbar biru di tema terang */
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             transition: background-color 0.3s ease;
+            position: fixed; /* Tetap fixed */
+            width: 100%; /* Lebar penuh */
+            top: 0; /* Di bagian atas */
+            left: 0;
+            z-index: 1000; /* Pastikan navbar di atas segalanya */
         }
         .navbar-brand {
             font-weight: 700;
-            color: #ffffff !important;
+            color: #ffffff !important; /* Warna brand putih */
         }
         .welcome-section {
-            background: linear-gradient(45deg, var(--primary-color), #00c6ff);
-            color: white;
+            background: linear-gradient(45deg, var(--primary-color), #00c6ff); /* Gradien biru terang */
+            color: white; /* Teks putih di welcome section */
             padding: 50px 0;
             margin-bottom: 30px;
             border-bottom-left-radius: 20px;
             border-bottom-right-radius: 20px;
             box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-            animation: fadeInDown 0.8s ease-out; /* Animasi section welcome */
+            animation: fadeInDown 0.8s ease-out;
+            position: relative;
+            overflow: hidden;
+            z-index: 10;
+        }
+        .welcome-section-content {
+            position: relative;
+            z-index: 10;
         }
         .welcome-section h1 {
             font-size: 2.8rem;
@@ -574,7 +622,7 @@ unset($_SESSION['error_message']);
         .welcome-section p {
             font-size: 1.2rem;
             opacity: 0.9;
-            animation: fadeInUp 1s ease-out; /* Animasi motivasi */
+            animation: fadeInUp 1s ease-out;
         }
         .card {
             border: none;
@@ -583,14 +631,18 @@ unset($_SESSION['error_message']);
             margin-bottom: 25px;
             overflow: hidden;
             transition: transform 0.3s ease, box-shadow 0.3s ease;
-            animation: fadeIn 0.8s ease-out; /* Animasi card */
+            animation: fadeIn 0.8s ease-out;
+            background-color: var(--card-background); /* Background kartu putih */
+            color: var(--text-color-dark);
+            position: relative;
+            z-index: 10;
         }
         .card:hover {
             transform: translateY(-5px);
             box-shadow: var(--shadow-medium);
         }
         .card-header {
-            background-color: var(--border-color);
+            background-color: var(--border-color); /* Header kartu abu-abu muda */
             border-bottom: 1px solid var(--border-color);
             font-weight: 600;
             color: var(--text-color-dark);
@@ -610,35 +662,43 @@ unset($_SESSION['error_message']);
         .task-item, .event-item {
             display: flex;
             justify-content: space-between;
-            align-items: flex-start; /* Align items to the start to allow text wrapping */
+            align-items: flex-start;
             padding: 15px 20px;
             border-bottom: 1px solid var(--border-color);
-            animation: fadeIn 0.5s ease-out; /* Fade-in for list items */
+            animation: fadeIn 0.5s ease-out;
         }
         .task-item:last-child, .event-item:last-child {
             border-bottom: none;
         }
         .task-item-content, .event-item-content {
             flex-grow: 1;
-            flex-shrink: 1; /* Allow content to shrink */
-            margin-right: 15px; /* Space between content and actions */
-            word-wrap: break-word; /* Ensure long words break */
-            overflow-wrap: break-word; /* Modern equivalent */
+            flex-shrink: 1;
+            margin-right: 15px;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
         }
         .task-item-actions, .event-item-actions {
-            flex-shrink: 0; /* Prevent actions from shrinking */
-            margin-left: auto; /* Push actions to the right */
-            white-space: nowrap; /* Keep buttons on one line (if space allows) */
-            display: flex; /* Make buttons flex container */
-            flex-direction: column; /* Stack buttons vertically */
-            align-items: flex-end; /* Align buttons to the right within their column */
+            flex-shrink: 0;
+            margin-left: auto;
+            white-space: nowrap;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
         }
-        /* Style for history delete button alignment */
+        .history-item-content {
+            flex-grow: 1;
+            flex-shrink: 1;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            margin-right: 10px;
+        }
         .history-item-actions {
             flex-shrink: 0;
-            margin-left: 10px; /* Adjust spacing */
-            align-self: center; /* Vertically center the button in history item */
+            margin-left: auto;
+            display: flex;
+            align-items: center;
         }
+
 
         .task-item h5, .event-item h5 {
             margin-bottom: 5px;
@@ -655,7 +715,7 @@ unset($_SESSION['error_message']);
             padding: 0.4em 0.8em;
             border-radius: 0.375rem;
             font-weight: 600;
-            display: inline-block; /* Ensure it wraps correctly */
+            display: inline-block;
             margin-top: 5px;
         }
         .status-selesai { background-color: var(--success-color); color: white; }
@@ -673,9 +733,9 @@ unset($_SESSION['error_message']);
             transform: translateY(-2px);
         }
         .btn-warning { background-color: var(--warning-color); border-color: var(--warning-color); color: var(--text-color-dark); }
-        .btn-danger { background-color: var(--danger-color); border-color: var(--danger-color); }
-        .btn-success { background-color: var(--success-color); border-color: var(--success-color); }
-        .btn-info { background-color: var(--info-color); border-color: var(--info-color); }
+        .btn-danger { background-color: var(--danger-color); border-color: var(--danger-color); color: white; }
+        .btn-success { background-color: var(--success-color); border-color: var(--success-color); color: white; }
+        .btn-info { background-color: var(--info-color); border-color: var(--info-color); color: white; }
         .no-items-message {
             text-align: center;
             padding: 30px;
@@ -702,7 +762,6 @@ unset($_SESSION['error_message']);
         }
 
         /* Calendar specific styles */
-        /* Menggunakan kelas dari kode Anda sebelumnya: calendar-edlink */
         .calendar-edlink {
             background-color: var(--card-background);
             border-radius: 15px;
@@ -710,31 +769,39 @@ unset($_SESSION['error_message']);
             padding: 20px;
             margin-bottom: 25px;
             transition: transform 0.3s ease, box-shadow 0.3s ease;
-            animation: fadeIn 0.8s ease-out; /* Animasi card */
+            animation: fadeIn 0.8s ease-out;
+            color: var(--text-color-dark);
+            position: relative; /* Tambahkan untuk z-index */
+            z-index: 10;
         }
         .calendar-edlink .weekdays {
             display: flex;
             justify-content: space-between;
             font-weight: 600;
-            color: var(--text-color-dark); /* FIX: Pastikan warna gelap di mode terang */
+            color: var(--text-color-dark);
             margin-bottom: 10px;
         }
-        /* FIX: Tambahan untuk memastikan teks hari ini dan judul kalender selalu terlihat */
         .calendar-edlink h4,
         .calendar-edlink .text-secondary {
-            color: var(--text-color-dark); /* FIX: Memastikan teks ini gelap di mode terang */
+            color: var(--text-color-dark);
+        }
+        body.theme-light .calendar-edlink h4,
+        body.theme-light .calendar-edlink .weekdays span,
+        body.theme-light .calendar-edlink .text-secondary {
+            color: var(--text-color-dark) !important;
         }
         body.theme-dark .calendar-edlink h4,
         body.theme-dark .calendar-edlink .weekdays span,
         body.theme-dark .calendar-edlink .text-secondary {
-            color: var(--text-color-dark) !important; /* FIX: Memastikan teks ini terang di mode gelap */
+            color: var(--text-color-dark) !important;
         }
+
 
         .calendar-edlink .days {
             display: flex;
             justify-content: space-between;
             margin-top: 0.5rem;
-            flex-wrap: wrap; /* Allow days to wrap to the next line */
+            flex-wrap: wrap;
         }
         .calendar-edlink .day {
             text-align: center;
@@ -745,10 +812,10 @@ unset($_SESSION['error_message']);
             position: relative;
             font-weight: 500;
             cursor: pointer;
-            color: var(--text-color-dark); /* FIX: Default text color for day is dark */
+            color: var(--text-color-dark);
             transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
-            text-decoration: none; /* Remove underline from links */
-            margin: 2px; /* Small margin for spacing between days */
+            text-decoration: none;
+            margin: 2px;
         }
         .calendar-edlink .day:hover {
             background-color: rgba(var(--primary-color-rgb), 0.1);
@@ -774,7 +841,7 @@ unset($_SESSION['error_message']);
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background-color: var(--warning-color); /* Oranye seperti contoh Anda */
+            background-color: var(--warning-color);
         }
 
         .daily-schedule-card {
@@ -787,6 +854,7 @@ unset($_SESSION['error_message']);
             margin-bottom: 10px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
             transition: transform 0.2s ease, box-shadow 0.2s ease;
+            color: var(--text-color-dark);
         }
         .schedule-item:hover {
             transform: translateY(-2px);
@@ -810,7 +878,7 @@ unset($_SESSION['error_message']);
 
         /* Profile image and dropdown */
         .profile-img {
-            width: 36px; /* Disesuaikan agar pas di navbar */
+            width: 36px;
             height: 36px;
             border-radius: 50%;
             object-fit: cover;
@@ -824,7 +892,7 @@ unset($_SESSION['error_message']);
             transform: scale(1.1);
         }
         .dropdown-item i {
-            width: 20px; /* Align icons */
+            width: 20px;
             text-align: center;
             margin-right: 5px;
         }
@@ -834,7 +902,7 @@ unset($_SESSION['error_message']);
             position: relative;
             cursor: pointer;
             font-size: 1.2rem;
-            color: white;
+            color: white; /* Bell putih di navbar */
             transition: transform 0.3s ease;
         }
         .notification-bell:hover {
@@ -850,7 +918,7 @@ unset($_SESSION['error_message']);
             padding: 2px 6px;
             font-size: 0.7rem;
             animation: pulse 1.5s infinite;
-            z-index: 100; /* Pastikan di atas elemen lain */
+            z-index: 100;
         }
 
         @keyframes pulse {
@@ -900,56 +968,90 @@ unset($_SESSION['error_message']);
             transform-origin: 50% 50%;
             transition: stroke-dashoffset 1s ease-out;
         }
-        .progress-circle-text {
-            font-size: 1.8rem;
-            font-weight: 700;
-            fill: var(--primary-color);
-        }
         /* Ensure primary-color-rgb is defined for rgba usage */
         body:not(.theme-dark) { --primary-color-rgb: 0, 123, 255; --danger-color-rgb: 220, 53, 69; }
         body.theme-dark { --primary-color-rgb: 74, 144, 226; --danger-color-rgb: 231, 76, 60; }
 
+
         .list-group-item:hover {
             background-color: rgba(0, 123, 255, 0.05); /* Softer hover for checklist */
+        }
+        .form-control {
+            border-radius: 8px;
+            padding: 12px 15px;
+            border: 1px solid var(--border-color);
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+            background-color: var(--card-background); /* Pastikan background form control sesuai tema */
+            color: var(--text-color-dark); /* Warna teks di form control */
+        }
+        .form-control::placeholder {
+            color: var(--text-color-light);
         }
         .form-control:focus {
             border-color: var(--primary-color);
             box-shadow: 0 0 0 0.25rem rgba(var(--primary-color-rgb), 0.25);
+            outline: none;
         }
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: background-color 0.3s ease, border-color 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .btn-primary:hover {
+            background-color: #0056b3; /* Darker blue on hover */
+            border-color: #0056b3;
+            transform: translateY(-3px);
+            box-shadow: 0 8px 20px rgba(0, 123, 255, 0.3);
+        }
+        .btn-success { background-color: var(--success-color); border-color: var(--success-color); color: white; }
+        .btn-info { background-color: var(--info-color); border-color: var(--info-color); color: white; }
+        .btn-danger { background-color: var(--danger-color); border-color: var(--danger-color); color: white; }
+
 
         /* Styles from user's provided code, integrated and harmonized */
         .card-task, .card-event, .shadow-sm {
-            box-shadow: var(--shadow-light) !important; /* Ensure consistency */
+            box-shadow: var(--shadow-light) !important;
         }
         .card-task:hover, .card-event:hover, .list-group-item:hover, .btn:hover {
-            box-shadow: 0 2px 12px rgba(var(--primary-color-rgb), 0.2) !important; /* Consistent hover shadow */
+            box-shadow: 0 2px 12px rgba(var(--primary-color-rgb), 0.2) !important;
             transform: translateY(-2px) scale(1.03);
             transition: 0.2s;
         }
         .avatar-upload { display:flex; align-items:center; gap:10px; }
         .avatar-upload input[type=file] { display:none; }
         .avatar-upload label { cursor:pointer; color:var(--primary-color); text-decoration:underline; }
-        .theme-dark .avatar-upload label { color: var(--primary-color); } /* Dark theme adjustment */
+        /* Tema gelap override untuk label avatar */
+        body.theme-dark .avatar-upload label { color: var(--primary-color); }
+
 
         /* Checkbox styling (kustom) */
-        .task-checkbox {
+        .task-checkbox, .history-checkbox {
             width: 20px;
             height: 20px;
-            min-width: 20px; /* Ensures it doesn't shrink */
+            min-width: 20px;
             margin-right: 15px;
             cursor: pointer;
             position: relative;
-            appearance: none; /* Hide default checkbox */
-            border: 2px solid var(--primary-color);
+            appearance: none;
+            border: 2px solid var(--primary-color); /* Biru di light theme */
             border-radius: 5px;
             transition: all 0.2s ease;
+            align-self: center;
         }
-        .task-checkbox:checked {
+        /* Tema gelap override untuk checkbox */
+        body.theme-dark .task-checkbox, body.theme-dark .history-checkbox {
+            border: 2px solid var(--primary-color); /* Biru di dark theme */
+        }
+
+        .task-checkbox:checked, .history-checkbox:checked {
             background-color: var(--success-color);
             border-color: var(--success-color);
         }
-        .task-checkbox:checked::before {
-            content: "\f00c"; /* FontAwesome check icon */
+        .task-checkbox:checked::before, .history-checkbox:checked::before {
+            content: "\f00c";
             font-family: "Font Awesome 6 Free";
             font-weight: 900;
             color: white;
@@ -959,7 +1061,11 @@ unset($_SESSION['error_message']);
             transform: translate(-50%, -50%);
             font-size: 14px;
         }
-        .task-checkbox:focus {
+        /* Tema gelap override untuk centang checkbox */
+        body.theme-dark .task-checkbox:checked::before, body.theme-dark .history-checkbox:checked::before {
+            color: white; /* Tetap putih di dark theme */
+        }
+        .task-checkbox:focus, .history-checkbox:focus {
             outline: none;
             box-shadow: 0 0 0 0.25rem rgba(var(--primary-color-rgb), 0.25);
         }
@@ -968,15 +1074,98 @@ unset($_SESSION['error_message']);
         @media (min-width: 992px) {
             .sidebar-col {
                 position: sticky;
-                top: 80px; /* Adjusted for fixed navbar height */
-                height: calc(100vh - 100px); /* Fill remaining viewport height */
-                overflow-y: auto; /* Allow scrolling within sidebar if content is long */
-                padding-bottom: 20px; /* Add some padding at the bottom */
+                top: 80px;
+                height: calc(100vh - 100px);
+                overflow-y: auto;
+                padding-bottom: 20px;
             }
         }
+
+        /* FLOATING ROBOT (PENYEMANGAT KECIL) */
+        .floating-robot {
+            width: 50px;
+            height: 60px;
+            background-color: #007bff; /* Biru terang */
+            border-radius: 10px 10px 5px 5px;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 999;
+            cursor: pointer;
+            box-shadow: var(--shadow-light);
+            animation: float 2s infinite ease-in-out;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        /* Warna robot di tema gelap */
+        body.theme-dark .floating-robot {
+            background-color: #4a90e2; /* Softer blue for dark theme */
+        }
+
+        .robot-head-small {
+            width: 30px;
+            height: 30px;
+            background-color: #3498db; /* Biru */
+            border-radius: 50%;
+            margin-bottom: 5px;
+            position: relative;
+        }
+        /* Warna kepala robot di tema gelap */
+        body.theme-dark .robot-head-small {
+            background-color: #3498db; /* Konsisten di dark theme */
+        }
+
+        .robot-eye-small {
+            width: 8px;
+            height: 8px;
+            background-color: #ffc107; /* Kuning */
+            border-radius: 50%;
+            position: absolute;
+            top: 8px;
+        }
+        .robot-eye-small:first-child {
+            left: 8px;
+        }
+        .robot-eye-small:last-child {
+            right: 8px;
+        }
+        /* Warna mata robot di tema gelap */
+        body.theme-dark .robot-eye-small {
+            background-color: #f1c40f; /* Kuning di dark theme */
+        }
+
+        /* Mulut robot kecil */
+        .robot-mouth-small {
+            width: 20px;
+            height: 15px;
+            background-color: #dc3545; /* Merah */
+            border-radius: 0 0 5px 5px;
+        }
+        /* Warna mulut robot di tema gelap */
+        body.theme-dark .robot-mouth-small {
+            background-color: #e74c3c; /* Merah di dark theme */
+        }
+
+
+        @keyframes float {
+            0% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+            100% { transform: translateY(0); }
+        }
+        /* END FLOATING ROBOT */
+
     </style>
 </head>
 <body>
+    <div class="floating-robot">
+        <div class="robot-head-small">
+            <div class="robot-eye-small"></div>
+            <div class="robot-eye-small"></div>
+        </div>
+        <div class="robot-mouth-small"></div>
+    </div>
+
 <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
   <div class="container-fluid">
     <a class="navbar-brand fw-bold" href="dashboard.php"><i class="fa-solid fa-calendar-check animated-icon me-2"></i> Fokus & Selesai</a>
@@ -1029,7 +1218,7 @@ unset($_SESSION['error_message']);
 </nav>
 
 <div class="welcome-section text-center">
-    <div class="container animate__animated animate__fadeInDown">
+    <div class="container welcome-section-content animate__animated animate__fadeInDown">
         <h1>Halo, <?= esc($username) ?>!</h1>
         <p class="animate__animated animate__fadeInUp"><?= esc($mot_today) ?></p>
     </div>
@@ -1052,16 +1241,16 @@ unset($_SESSION['error_message']);
   <div class="row g-4">
     <div class="col-lg-3 sidebar-col">
       <div class="calendar-edlink mb-4 animate__animated animate__fadeInLeft">
-        <div class="mb-3 p-2 rounded bg-gradient" style="background:linear-gradient(90deg, var(--primary-color) 60%,#6dd5ed 100%);color:#fff;box-shadow:0 2px 8px rgba(var(--primary-color-rgb),0.2);">
+        <div class="mb-3 p-2 rounded bg-gradient" style="background:linear-gradient(90deg, var(--primary-color) 60%,#00c6ff 100%);color:#fff;box-shadow:0 2px 8px rgba(var(--primary-color-rgb),0.2);">
           <i class="fa-solid fa-quote-left"></i> <span class="fw-semibold"><?= $mot_today ?></span>
         </div>
         <div class="d-flex justify-content-between align-items-center mb-2">
             <a href="<?= $prev_month_link ?>" class="btn btn-sm btn-outline-primary"><i class="fa-solid fa-chevron-left"></i></a>
-            <span class="fw-bold fs-5"><?= $display_date_obj->format('F Y') ?></span>
+            <span class="fw-bold fs-5" style="color:var(--text-color-dark);"><?= $display_date_obj->format('F Y') ?></span>
             <a href="<?= $next_month_link ?>" class="btn btn-sm btn-outline-primary"><i class="fa-solid fa-chevron-right"></i></a>
         </div>
         <div class="weekdays">
-          <?php $hari = ['Sen','Sel','Rab','Kam','Jum','Sab','Min']; foreach($hari as $h) echo '<span>'.$h.'</span>'; ?>
+          <?php $hari = ['Sen','Sel','Rab','Kam','Jum','Sab','Min']; foreach($hari as $h) echo '<span style="color:var(--text-color-dark);">'.$h.'</span>'; ?>
         </div>
         <div class="days mt-2">
           <?php
@@ -1097,7 +1286,6 @@ unset($_SESSION['error_message']);
                   <svg class="progress-circle" viewBox="0 0 36 36">
                       <path class="progress-circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                       <path class="progress-circle-fg" stroke-dasharray="<?= $progress_percentage ?>, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                      <text x="18" y="20.35" class="progress-circle-text"><?= $progress_percentage ?>%</text>
                   </svg>
               </div>
               <p>Total Tugas: <span class="fw-bold text-primary"><?= $total_tasks ?></span></p>
@@ -1112,7 +1300,7 @@ unset($_SESSION['error_message']);
             <span><i class="fa-solid fa-plus-circle me-2"></i> Tambah Tugas Baru</span>
         </div>
         <div class="card-body">
-            <?php if ($err_tugas): ?><div class="alert alert-danger mb-3 animate__animated animate__fadeInDown"><?= esc($err_tugas) ?></div><?php endif; ?>
+            <?php if ($err_tugas): ?><div class="alert alert-danger mb-3 animate__animated animate__fadeInDown" role="alert"><?= esc($err_tugas) ?></div><?php endif; ?>
             <form method="post" class="row g-3">
               <div class="col-md-6">
                 <label for="nama_tugas_input" class="form-label">Nama Tugas</label>
@@ -1137,7 +1325,7 @@ unset($_SESSION['error_message']);
             <span><i class="fa-solid fa-calendar-plus me-2"></i> Tambah Acara Baru</span>
         </div>
         <div class="card-body">
-            <?php if ($err_acara): ?><div class="alert alert-danger mb-3 animate__animated animate__fadeInDown"><?= esc($err_acara) ?></div><?php endif; ?>
+            <?php if ($err_acara): ?><div class="alert alert-danger mb-3 animate__animated animate__fadeInDown" role="alert"><?= esc($err_acara) ?></div><?php endif; ?>
             <form method="post" class="row g-3">
               <div class="col-md-6">
                 <label for="nama_acara_input" class="form-label">Nama Acara</label>
@@ -1188,7 +1376,7 @@ unset($_SESSION['error_message']);
                     $is_urgent = ($t['status']==='belum' && strtotime($t['deadline']) >= time() && strtotime($t['deadline']) <= strtotime('+1 day'));
                     $is_late = ($t['status']==='belum' && strtotime($t['deadline']) < time());
                     ?>
-                    <li class="list-group-item d-flex align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;<?= $is_urgent?'background:#fffbe6;':'' ?>">
+                    <li class="list-group-item d-flex align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp <?= $is_urgent ? 'urgent-task' : '' ?>" style="border-radius:12px;" data-id="<?= $t['id'] ?>" data-type="task">
                         <input type="checkbox" class="task-checkbox" data-task-id="<?= $t['id'] ?>" <?= $t['status'] === 'selesai' ? 'checked' : '' ?>>
                         <div class="task-item-content">
                             <h5 class="mb-0 <?= $t['status'] === 'selesai' ? 'text-decoration-line-through text-muted' : '' ?>"><?= esc($t['nama_tugas']) ?></h5>
@@ -1210,12 +1398,9 @@ unset($_SESSION['error_message']);
                                     data-deadline="<?= date('Y-m-d\TH:i', strtotime($t['deadline'])) ?>">
                                 <i class="fa-solid fa-edit"></i> Edit
                             </button>
-                            <form method="POST" action="dashboard.php?display_month=<?= $display_month ?>&display_year=<?= $display_year ?>" class="d-inline">
-                                <input type="hidden" name="delete_task_id" value="<?= $t['id'] ?>">
-                                <button type="submit" class="btn btn-sm btn-danger delete-btn" onclick="return confirm('Yakin ingin menghapus tugas ini?');">
-                                    <i class="fa-solid fa-trash-alt"></i> Hapus
-                                </button>
-                            </form>
+                            <button class="btn btn-sm btn-danger delete-item-btn" data-id="<?= $t['id'] ?>" data-type="task">
+                                <i class="fa-solid fa-trash-alt"></i> Hapus
+                            </button>
                         </div>
                     </li>
                 <?php endforeach; ?>
@@ -1234,7 +1419,7 @@ unset($_SESSION['error_message']);
             <?php else: ?>
                 <ul class="list-group">
                 <?php foreach($all_events as $a): ?>
-                    <li class="list-group-item d-flex align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;">
+                    <li class="list-group-item d-flex align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;" data-id="<?= $a['id'] ?>" data-type="event">
                         <div class="event-item-content">
                             <h5 class="mb-0"><?= esc($a['nama_acara']) ?></h5>
                             <p class="small text-muted mb-1">Tanggal: <?= esc(tgl_indo_edlink($a['tanggal'])) ?></p>
@@ -1253,12 +1438,9 @@ unset($_SESSION['error_message']);
                                     data-tanggal="<?= esc($a['tanggal']) ?>">
                                 <i class="fa-solid fa-edit"></i> Edit
                             </button>
-                            <form method="POST" action="dashboard.php?display_month=<?= $display_month ?>&display_year=<?= $display_year ?>" class="d-inline">
-                                <input type="hidden" name="delete_event_id" value="<?= $a['id'] ?>">
-                                <button type="submit" class="btn btn-sm btn-danger delete-btn" onclick="return confirm('Yakin ingin menghapus acara ini?');">
-                                    <i class="fa-solid fa-trash-alt"></i> Hapus
-                                </button>
-                            </form>
+                            <button class="btn btn-sm btn-danger delete-item-btn" data-id="<?= $a['id'] ?>" data-type="event">
+                                <i class="fa-solid fa-trash-alt"></i> Hapus
+                            </button>
                         </div>
                     </li>
                 <?php endforeach; ?>
@@ -1269,7 +1451,14 @@ unset($_SESSION['error_message']);
 
       <div class="card animate__animated animate__fadeInRight mb-4">
         <div class="card-header">
-            <span><i class="fa-solid fa-history me-2"></i> Riwayat Tugas & Acara Selesai</span>
+            <span class="me-auto"><i class="fa-solid fa-history me-2"></i> Riwayat Tugas & Acara Selesai</span>
+            <div class="form-check form-check-inline me-2">
+                <input class="form-check-input history-select-all-checkbox" type="checkbox" id="historySelectAllCheckbox">
+                <label class="form-check-label" for="historySelectAllCheckbox">Pilih Semua</label>
+            </div>
+            <button class="btn btn-sm btn-danger" id="deleteSelectedHistoryBtn" disabled>
+                <i class="fa-solid fa-trash-alt me-1"></i> Hapus Yang Dipilih
+            </button>
         </div>
         <div class="card-body">
             <?php if (empty($completed_tasks) && empty($past_events)): ?>
@@ -1279,10 +1468,10 @@ unset($_SESSION['error_message']);
                 <?php if (empty($completed_tasks)): ?>
                     <div class="text-muted small mb-3">Tidak ada tugas yang selesai.</div>
                 <?php else: ?>
-                    <ul class="list-group mb-3">
+                    <ul class="list-group mb-3" id="completedTasksList">
                         <?php foreach($completed_tasks as $t): ?>
-                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;">
-                                <div class="task-item-content">
+                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;" data-id="<?= $t['id'] ?>" data-type="task">
+                                <div class="history-item-content">
                                     <h5 class="mb-0 text-decoration-line-through text-muted"><?= esc($t['nama_tugas']) ?></h5>
                                     <p class="small text-muted mb-1">
                                         Selesai pada: <?= esc(tgl_indo_edlink(date('Y-m-d', strtotime($t['deadline'])))) ?>, Pukul <?= date('H:i', strtotime($t['deadline'])) ?>
@@ -1293,12 +1482,7 @@ unset($_SESSION['error_message']);
                                     <span class="status-badge status-selesai">Selesai</span>
                                 </div>
                                 <div class="history-item-actions">
-                                    <form method="POST" action="dashboard.php?display_month=<?= $display_month ?>&display_year=<?= $display_year ?>" class="d-inline">
-                                        <input type="hidden" name="delete_task_id" value="<?= $t['id'] ?>">
-                                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Yakin ingin menghapus tugas ini dari riwayat?');">
-                                            <i class="fa-solid fa-trash-alt"></i> Hapus
-                                        </button>
-                                    </form>
+                                    <input type="checkbox" class="history-checkbox" data-id="<?= $t['id'] ?>" data-type="task">
                                 </div>
                             </li>
                         <?php endforeach; ?>
@@ -1309,24 +1493,19 @@ unset($_SESSION['error_message']);
                 <?php if (empty($past_events)): ?>
                     <div class="text-muted small">Tidak ada acara yang telah berlalu.</div>
                 <?php else: ?>
-                    <ul class="list-group">
+                    <ul class="list-group" id="pastEventsList">
                         <?php foreach($past_events as $a): ?>
-                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;">
-                                <div class="event-item-content">
+                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;" data-id="<?= $a['id'] ?>" data-type="event">
+                                <div class="history-item-content">
                                     <h5 class="mb-0"><?= esc($a['nama_acara']) ?></h5>
                                     <p class="small text-muted mb-1">Tanggal: <?= esc(tgl_indo_edlink($a['tanggal'])) ?></p>
                                     <?php if (!empty($a['deskripsi'])): ?>
                                         <p class="small"><?= esc($a['deskripsi']) ?></p>
                                     <?php endif; ?>
-                                    <span class="badge bg-secondary text-white">Terlaksana</span>
+                                    <span class="badge bg-secondary text-white">Selesai</span>
                                 </div>
                                 <div class="history-item-actions">
-                                    <form method="POST" action="dashboard.php?display_month=<?= $display_month ?>&display_year=<?= $display_year ?>" class="d-inline">
-                                        <input type="hidden" name="delete_event_id" value="<?= $a['id'] ?>">
-                                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Yakin ingin menghapus acara ini dari riwayat?');">
-                                            <i class="fa-solid fa-trash-alt"></i> Hapus
-                                        </button>
-                                    </form>
+                                    <input type="checkbox" class="history-checkbox" data-id="<?= $a['id'] ?>" data-type="event">
                                 </div>
                             </li>
                         <?php endforeach; ?>
@@ -1426,20 +1605,34 @@ unset($_SESSION['error_message']);
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
-    $(document).ready(function() { // Seluruh kode JS dibungkus di sini
+    // Array untuk melacak ID notifikasi yang sudah ditampilkan di sesi ini
+    const notifiedItems = {}; // { taskId: true, eventId: true }
 
+    $(document).ready(function() {
         // Theme Switcher
         const themeToggle = document.getElementById('themeToggle');
         if (themeToggle) {
             themeToggle.onclick = function() {
                 document.body.classList.toggle('theme-dark');
                 localStorage.setItem('theme', document.body.classList.contains('theme-dark') ? 'dark' : 'light');
-                themeToggle.querySelector('i').className = document.body.classList.contains('theme-dark') ? 'fa-solid fa-sun' : 'fa-solid fa-moon';
+                // Mengubah ikon berdasarkan tema
+                if (document.body.classList.contains('theme-dark')) {
+                    themeToggle.querySelector('i').classList.remove('fa-moon');
+                    themeToggle.querySelector('i').classList.add('fa-sun');
+                } else {
+                    themeToggle.querySelector('i').classList.remove('fa-sun');
+                    themeToggle.querySelector('i').classList.add('fa-moon');
+                }
             };
             // Set theme on initial load
             if (localStorage.getItem('theme') === 'dark') {
                 document.body.classList.add('theme-dark');
-                themeToggle.querySelector('i').className = 'fa-solid fa-sun';
+                themeToggle.querySelector('i').classList.remove('fa-moon');
+                themeToggle.querySelector('i').classList.add('fa-sun');
+            } else {
+                // Pastikan ikon default adalah bulan jika tema light
+                themeToggle.querySelector('i').classList.remove('fa-sun');
+                themeToggle.querySelector('i').classList.add('fa-moon');
             }
         }
 
@@ -1503,25 +1696,13 @@ unset($_SESSION['error_message']);
 
         if (weeklyStatsModalElement) {
             document.getElementById('showStatsBtn').addEventListener('click', function() {
-                // Saat tombol diklik, pastikan modal tampil, lalu muat data
-                // Menggunakan Bootstrap Modal JS API untuk membuka modal
                 var myModal = new bootstrap.Modal(weeklyStatsModalElement);
                 myModal.show();
             });
 
             weeklyStatsModalElement.addEventListener('shown.bs.modal', function() {
-                const statsContent = document.getElementById('weeklyChartModalCanvas'); // Target canvas directly
-                if (!statsContent) {
-                    console.error("Canvas element not found for weekly chart modal.");
-                    // Jika canvas tidak ditemukan, tampilkan pesan error di body modal
-                    const modalBody = weeklyStatsModalElement.querySelector('.modal-body');
-                    modalBody.innerHTML = '<p class="text-danger text-center">Element grafik tidak ditemukan.</p>';
-                    return;
-                }
-
-                // Tampilkan spinner loading sebelum fetch
                 const modalBody = weeklyStatsModalElement.querySelector('.modal-body');
-                modalBody.innerHTML = '<p class="text-center text-muted">Memuat statistik...</p><div class="d-flex justify-content-center"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div><canvas id="weeklyChartModalCanvas" height="180" style="display:none;"></canvas>'; // Sembunyikan canvas saat loading
+                modalBody.innerHTML = '<p class="text-center text-muted">Memuat statistik...</p><div class="d-flex justify-content-center"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div><canvas id="weeklyChartModalCanvas" height="180" style="display:none;"></canvas>'; 
 
                 fetch('weekly_stats.php')
                     .then(response => {
@@ -1531,10 +1712,10 @@ unset($_SESSION['error_message']);
                         return response.json();
                     })
                     .then(data => {
-                        modalBody.innerHTML = '<canvas id="weeklyChartModalCanvas" height="180"></canvas>'; // Ganti dengan canvas setelah data diterima
+                        modalBody.innerHTML = '<canvas id="weeklyChartModalCanvas" height="180"></canvas>'; 
                         const updatedCanvas = document.getElementById('weeklyChartModalCanvas');
 
-                        if (weeklyChartModal) weeklyChartModal.destroy(); // Destroy previous chart instance
+                        if (weeklyChartModal) weeklyChartModal.destroy(); 
 
                         weeklyChartModal = new Chart(updatedCanvas.getContext('2d'), {
                             type: 'bar',
@@ -1575,14 +1756,34 @@ unset($_SESSION['error_message']);
                     weeklyChartModal.destroy();
                     weeklyChartModal = null;
                 }
-                // Reset modal body to initial canvas state for next open
                 const modalBody = weeklyStatsModalElement.querySelector('.modal-body');
                 modalBody.innerHTML = '<canvas id="weeklyChartModalCanvas" height="180"></canvas>';
             });
         }
 
-        // Notifikasi (dari cek_notif.php)
-        // const notifSound = new Audio('https://cdn.pixabay.com/audio/2022/07/26/audio_124bfa4c3b.mp3'); // Dikomentari untuk menghindari error 403
+        // --- NOTIFIKASI DESKTOP DAN NAVBAR ---
+        function showDesktopNotification(title, body) {
+            if (Notification.permission === "granted") {
+                new Notification(title, {
+                    body: body,
+                    icon: 'https://cdn-icons-png.flaticon.com/512/12101/12101890.png' // Icon robot sebagai contoh
+                });
+            } else if (Notification.permission === "denied") {
+                // Tidak perlu alert jika ditolak, karena pengguna sudah tahu/menolak
+                console.warn("Notifikasi desktop diblokir oleh pengguna.");
+            } else { // 'default'
+                Notification.requestPermission().then(permission => {
+                    if (permission === "granted") {
+                        new Notification(title, {
+                            body: body,
+                            icon: 'https://cdn-icons-png.flaticon.com/512/12101/12101890.png'
+                        });
+                    } else {
+                        console.warn("Notifikasi desktop tidak diizinkan oleh pengguna.");
+                    }
+                });
+            }
+        }
 
         function cekNotifikasiNavbar() {
             fetch('cek_notif.php')
@@ -1595,19 +1796,65 @@ unset($_SESSION['error_message']);
                 .then(data => {
                     let notifArea = document.getElementById('notif-area');
                     let notifBadge = document.getElementById('notif-badge');
-                    if (data.tugas && data.tugas.length > 0) {
-                        notifBadge.style.display = 'block';
-                        let pesanHtml = '<div class="list-group list-group-flush">';
-                        data.tugas.forEach(t => {
+                    let hasNewNotification = false;
+                    let pesanHtml = '<div class="list-group list-group-flush">';
+                    
+                    const today = new Date();
+                    const todayDateString = today.toISOString().split('T')[0]; // Format YYYY-MM-DD
+
+                    // Filter dan tampilkan notifikasi di navbar & desktop
+                    data.tugas.forEach(t => {
+                        // Periksa tugas yang tepat pada tanggalnya (deadline)
+                        const taskDeadlineDate = t.deadline ? t.deadline.split(' ')[0] : ''; // Ambil hanya tanggalnya (YYYY-MM-DD)
+                        
+                        if (taskDeadlineDate === todayDateString && t.status !== 'selesai') {
+                            hasNewNotification = true;
                             pesanHtml += '<div class="list-group-item list-group-item-action py-2 animate__animated animate__fadeInLeft">' +
-                                '<i class="fa-solid fa-circle-exclamation text-danger me-2"></i>' +
-                                '<strong>' + esc(t.nama_tugas) + '</strong><br>' +
+                                '<i class="fa-solid fa-bell text-warning me-2"></i>' +
+                                '<strong>Tugas Hari Ini: ' + esc(t.nama_tugas) + '</strong><br>' +
                                 '<small class="text-muted">Deadline: ' + esc(t.deadline) + '</small>' +
                                 '</div>';
+                            
+                            // Tampilkan notifikasi desktop jika belum pernah di-notifikasi di sesi ini
+                            if (Notification.permission === "granted" && !notifiedItems['task_' + t.id]) {
+                                showDesktopNotification('Tugas Hari Ini!', 'Jangan lupa: ' + t.nama_tugas);
+                                notifiedItems['task_' + t.id] = true; // Tandai sudah di-notifikasi
+                            }
+                        } else if (t.status !== 'selesai') { // Tugas yang mendekati deadline (masih penting di navbar)
+                             pesanHtml += '<div class="list-group-item list-group-item-action py-2 animate__animated animate__fadeInLeft">' +
+                                '<i class="fa-solid fa-circle-exclamation text-danger me-2"></i>' +
+                                '<strong>Tugas Mendekati: ' + esc(t.nama_tugas) + '</strong><br>' +
+                                '<small class="text-muted">Deadline: ' + esc(t.deadline) + '</small>' +
+                                '</div>';
+                        }
+                    });
+
+                    // Asumsi cek_notif.php juga bisa memberikan data acara, jika tidak ada sesuaikan
+                    // Jika data.acara ada, tambahkan logika serupa untuk acara
+                    if (data.acara) {
+                        data.acara.forEach(a => {
+                            const eventDate = a.tanggal ? a.tanggal : ''; // Tanggal acara (YYYY-MM-DD)
+                            if (eventDate === todayDateString) {
+                                hasNewNotification = true;
+                                pesanHtml += '<div class="list-group-item list-group-item-action py-2 animate__animated animate__fadeInLeft">' +
+                                    '<i class="fa-solid fa-calendar-day text-info me-2"></i>' +
+                                    '<strong>Acara Hari Ini: ' + esc(a.nama_acara) + '</strong><br>' +
+                                    '<small class="text-muted">Tanggal: ' + esc(a.tanggal) + '</small>' +
+                                    '</div>';
+                                
+                                if (Notification.permission === "granted" && !notifiedItems['event_' + a.id]) {
+                                    showDesktopNotification('Acara Hari Ini!', 'Ada acara: ' + a.nama_acara);
+                                    notifiedItems['event_' + a.id] = true;
+                                }
+                            }
                         });
-                        pesanHtml += '</div>';
+                    }
+
+                    pesanHtml += '</div>';
+
+                    if (hasNewNotification) {
+                        notifBadge.style.display = 'block';
                         notifArea.innerHTML = pesanHtml;
-                        // notifSound.play().catch(e => console.error("Error playing sound:", e));
                     } else {
                         notifBadge.style.display = 'none';
                         notifArea.innerHTML = '<div class="text-muted text-center py-3">Tidak ada notifikasi baru.</div>';
@@ -1616,9 +1863,22 @@ unset($_SESSION['error_message']);
                 .catch(error => console.error('Error fetching notifications:', error));
         }
 
-        // Jalankan cekNotifikasiNavbar setiap 60 detik
-        setInterval(cekNotifikasiNavbar, 60000);
-        // Jalankan saat halaman dimuat pertama kali (setelah DOM siap)
+        // Minta izin notifikasi saat halaman dimuat (jika status 'default')
+        if (Notification.permission === "default") {
+            Notification.requestPermission();
+        }
+        // Jika notifikasi ditolak, tidak perlu mengganggu pengguna dengan alert berulang
+        // jika (Notification.permission === "denied") {
+        //     console.warn("Notifikasi desktop diblokir oleh pengguna.");
+        // }
+
+
+        // Event listener untuk tombol uji notifikasi telah dihapus.
+
+
+        // Jalankan cekNotifikasiNavbar setiap 60 detik (atau sesuai kebutuhan)
+        setInterval(cekNotifikasiNavbar, 60000); // Setiap 1 menit
+        // Jalankan saat halaman dimuat pertama kali
         cekNotifikasiNavbar();
 
         // Escape HTML for safety (client-side)
@@ -1644,21 +1904,61 @@ unset($_SESSION['error_message']);
         // JAVASCRIPT FOR CHECKBOX, EDIT, DELETE
         // ===========================================
 
+        // Fungsi AJAX untuk Delete Item (Tugas/Acara)
+        function deleteItem(id, type) {
+            if (!confirm(`Yakin ingin menghapus ${type === 'task' ? 'tugas' : 'acara'} ini?`)) {
+                return;
+            }
+
+            $.ajax({
+                url: 'dashboard.php', // Mengirim ke halaman yang sama
+                type: 'POST',
+                data: {
+                    action: `delete_${type}`, // 'delete_task' atau 'delete_event'
+                    id: id
+                },
+                dataType: 'json',
+                success: function(response) {
+                    if (response.success) {
+                        // For single deletion from task list / event list
+                        $(`li[data-id="${id}"][data-type="${type}"]`).fadeOut(300, function() {
+                            $(this).remove();
+                            // Reload after animation complete
+                             location.reload(); 
+                        });
+                    } else {
+                        alert(`Gagal menghapus ${type === 'task' ? 'tugas' : 'acara'}: ` + response.message);
+                    }
+                },
+                error: function(xhr, status, error) {
+                    console.error("AJAX Error:", status, error);
+                    alert(`Terjadi kesalahan saat menghapus ${type === 'task' ? 'tugas' : 'acara'}.`);
+                }
+            });
+        }
+
+        // Event Listener untuk Tombol Hapus Individual (di Daftar Semua Tugas/Acara)
+        $(document).on('click', '.delete-item-btn', function() {
+            const id = $(this).data('id');
+            const type = $(this).data('type');
+            deleteItem(id, type);
+        });
+
         // Handle Task Status Toggle (Checkbox)
         $(document).on('change', '.task-checkbox', function() {
             const taskId = $(this).data('task-id');
             const isChecked = $(this).is(':checked');
-            const newStatus = isChecked ? 'selesai' : 'belum';
             const taskItem = $(this).closest('.list-group-item');
             const taskName = taskItem.find('h5');
             const statusBadge = taskItem.find('.status-badge');
 
             $.ajax({
-                url: 'dashboard.php?display_month=<?= $display_month ?>&display_year=<?= $display_year ?>', // Kirim ke halaman yang sama
+                url: 'dashboard.php', // Mengirim ke halaman yang sama
                 type: 'POST',
                 data: {
-                    task_id_toggle_status: taskId,
-                    current_status: isChecked ? 'belum' : 'selesai' // Kirim status saat ini (sebelum diubah)
+                    action: 'toggle_task_status',
+                    current_status: isChecked ? 'belum' : 'selesai', // Kirim status saat ini (sebelum diubah)
+                    task_id: taskId
                 },
                 dataType: 'json',
                 success: function(response) {
@@ -1667,26 +1967,22 @@ unset($_SESSION['error_message']);
                         statusBadge.removeClass('status-belum status-selesai status-sedang-dikerjakan status-terlambat status-mendesak')
                                    .addClass('status-' + response.new_status);
                         
-                        // Perbarui teks badge berdasarkan status baru
                         if (response.new_status === 'selesai') {
                             statusBadge.text('Selesai');
-                            statusBadge.css('background-color', 'var(--success-color)'); // Set warna success
+                            statusBadge.css('background-color', 'var(--success-color)');
                         } else {
-                            // Re-evaluate urgent/late status if task becomes 'belum' again
                             let deadlineText = taskItem.find('p.small.text-muted').text();
                             let datePart = deadlineText.split('Deadline: ')[1].split(', Pukul')[0].trim();
                             let timePart = deadlineText.split('Pukul ')[1].trim();
 
                             const monthNamesIndo = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
-                            const monthNamesEng = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                            
                             let dateParts = datePart.split(' ');
                             let dayOfMonth = dateParts[1];
                             let monthShortIndo = dateParts[2];
                             let year = dateParts[3];
                             
                             let monthIndex = monthNamesIndo.indexOf(monthShortIndo);
-                            let monthShortEng = monthNamesEng[monthIndex];
+                            let monthShortEng = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][monthIndex];
                             
                             let formattedDeadlineString = `${monthShortEng} ${dayOfMonth}, ${year} ${timePart}:00`;
                             let fullDeadline = new Date(formattedDeadlineString);
@@ -1695,7 +1991,7 @@ unset($_SESSION['error_message']);
                             if (fullDeadline < now) {
                                 statusBadge.text('Terlambat');
                                 statusBadge.removeClass('status-warning').addClass('status-danger');
-                            } else if ((fullDeadline.getTime() - now.getTime()) / (1000 * 60 * 60) <= 24) { // within 24 hours
+                            } else if ((fullDeadline.getTime() - now.getTime()) / (1000 * 60 * 60) <= 24) {
                                 statusBadge.text('Mendesak');
                                 statusBadge.removeClass('status-danger').addClass('status-warning');
                             } else {
@@ -1703,18 +1999,16 @@ unset($_SESSION['error_message']);
                                 statusBadge.removeClass('status-warning').addClass('status-danger');
                             }
                         }
-                        
-                        // Opsional: refresh statistik umum
-                        location.reload(); // Untuk update statistik progress bar dan list
+                        location.reload(); 
                     } else {
                         alert('Gagal memperbarui status tugas: ' + response.message);
-                        $(this).prop('checked', !isChecked); // Kembalikan ke status semula jika gagal
+                        $(this).prop('checked', !isChecked);
                     }
                 },
                 error: function(xhr, status, error) {
                     console.error("AJAX Error:", status, error);
                     alert('Terjadi kesalahan saat memperbarui status tugas.');
-                    $(this).prop('checked', !isChecked); // Kembalikan ke status semula jika gagal
+                    $(this).prop('checked', !isChecked);
                 }
             });
         });
@@ -1744,6 +2038,149 @@ unset($_SESSION['error_message']);
             $('#editDeskripsiAcara').val(deskripsi);
             $('#editTanggalAcara').val(tanggal);
         });
+
+        // ===========================================
+        // NEW JAVASCRIPT FOR HISTORY DELETION
+        // ===========================================
+
+        const historySelectAllCheckbox = $('#historySelectAllCheckbox');
+        const deleteSelectedHistoryBtn = $('#deleteSelectedHistoryBtn');
+        const historyCheckboxes = $('.history-checkbox'); // Semua checkbox di riwayat
+
+        function updateDeleteSelectedButtonState() {
+            const checkedCount = historyCheckboxes.filter(':checked').length;
+            if (checkedCount > 0) {
+                deleteSelectedHistoryBtn.prop('disabled', false);
+            } else {
+                deleteSelectedHistoryBtn.prop('disabled', true);
+            }
+        }
+
+        // Event listener untuk checkbox "Pilih Semua"
+        historySelectAllCheckbox.on('change', function() {
+            historyCheckboxes.prop('checked', this.checked);
+            updateDeleteSelectedButtonState();
+        });
+
+        // Event listener untuk setiap checkbox riwayat
+        historyCheckboxes.on('change', function() {
+            updateDeleteSelectedButtonState();
+            // Jika ada checkbox yang tidak tercentang, batalkan centang "Pilih Semua"
+            if (!this.checked) {
+                historySelectAllCheckbox.prop('checked', false);
+            } else {
+                // Jika semua checkbox tercentang, centang "Pilih Semua"
+                if (historyCheckboxes.length === historyCheckboxes.filter(':checked').length) {
+                    historySelectAllCheckbox.prop('checked', true);
+                }
+            }
+        });
+
+        // Event listener untuk tombol "Hapus Yang Dipilih"
+        deleteSelectedHistoryBtn.on('click', function() {
+            const selectedTaskIds = [];
+            const selectedEventIds = [];
+
+            historyCheckboxes.filter(':checked').each(function() {
+                const id = $(this).data('id');
+                const type = $(this).data('type');
+                if (type === 'task') {
+                    selectedTaskIds.push(id);
+                } else if (type === 'event') {
+                    selectedEventIds.push(id);
+                }
+            });
+
+            if (selectedTaskIds.length === 0 && selectedEventIds.length === 0) {
+                alert('Tidak ada item yang dipilih untuk dihapus.');
+                return;
+            }
+
+            if (!confirm('Yakin ingin menghapus item-item yang dipilih dari riwayat?')) {
+                return;
+            }
+
+            let deletionsPending = 0;
+            let deletionsCompleted = 0;
+            const totalDeletions = selectedTaskIds.length + selectedEventIds.length;
+
+            if (selectedTaskIds.length > 0) {
+                deletionsPending++;
+                $.ajax({
+                    url: 'dashboard.php',
+                    type: 'POST',
+                    data: {
+                        action: 'delete_task',
+                        id: selectedTaskIds // Kirim array ID
+                    },
+                    dataType: 'json',
+                    traditional: true, // Penting untuk mengirim array ID
+                    success: function(response) {
+                        deletionsCompleted++;
+                        if (response.success) {
+                            selectedTaskIds.forEach(id => {
+                                $(`li[data-id="${id}"][data-type="task"]`).fadeOut(300, function() {
+                                    $(this).remove();
+                                });
+                            });
+                        } else {
+                            alert('Gagal menghapus beberapa tugas: ' + response.message);
+                        }
+                        if (deletionsCompleted === totalDeletions) {
+                            location.reload(); // Refresh halaman setelah semua selesai
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        deletionsCompleted++;
+                        console.error("AJAX Error deleting tasks:", status, error);
+                        alert('Terjadi kesalahan saat menghapus tugas.');
+                        if (deletionsCompleted === totalDeletions) {
+                            location.reload();
+                        }
+                    }
+                });
+            }
+
+            if (selectedEventIds.length > 0) {
+                deletionsPending++;
+                $.ajax({
+                    url: 'dashboard.php',
+                    type: 'POST',
+                    data: {
+                        action: 'delete_event',
+                        id: selectedEventIds // Kirim array ID
+                    },
+                    dataType: 'json',
+                    traditional: true, // Penting untuk mengirim array ID
+                    success: function(response) {
+                        deletionsCompleted++;
+                        if (response.success) {
+                            selectedEventIds.forEach(id => {
+                                $(`li[data-id="${id}"][data-type="event"]`).fadeOut(300, function() {
+                                    $(this).remove();
+                                });
+                            });
+                        } else {
+                            alert('Gagal menghapus beberapa acara: ' + response.message);
+                        }
+                        if (deletionsCompleted === totalDeletions) {
+                            location.reload(); // Refresh halaman setelah semua selesai
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        deletionsCompleted++;
+                        console.error("AJAX Error deleting events:", status, error);
+                        alert('Terjadi kesalahan saat menghapus acara.');
+                        if (deletionsCompleted === totalDeletions) {
+                            location.reload();
+                        }
+                    }
+                });
+            }
+        });
+
+        // Inisialisasi awal tombol Hapus Yang Dipilih
+        updateDeleteSelectedButtonState();
 
     }); // END of $(document).ready(function() { ... });
 </script>
