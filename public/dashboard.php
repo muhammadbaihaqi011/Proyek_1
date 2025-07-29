@@ -540,7 +540,7 @@ unset($_SESSION['error_message']);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - Fokus & Selesai</title>
+    <title>Fokus & Selesai</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" />
@@ -1669,7 +1669,7 @@ unset($_SESSION['error_message']);
         <div class="row g-4">
             <div class="col-lg-3 sidebar-col">
                 <div class="calendar-edlink mb-4 animate__animated animate__fadeInLeft">
-                    <div class="mb-3 p-2 rounded bg-gradient" style="background:linear-gradient(90deg, var(--primary-color) 60%,#00c6ff 100%);color:#fff;box-shadow:0 2px 8px rgba(var(--primary-color-rgb),0.2);">
+                    <div class="mb-3 p-2 rounded bg-gradient" style="background:linear-gradient(90deg, var(--primary-color) 60%,#00c6ff 100%);color:#00c6ff;box-shadow:0 2px 8px rgba(var(--primary-color-rgb),0.2);">
                         <i class="fa-solid fa-quote-left"></i> <span class="fw-semibold"><?= $mot_today ?></span>
                     </div>
                     <div class="d-flex justify-content-between align-items-center mb-2">
@@ -1889,7 +1889,7 @@ unset($_SESSION['error_message']);
                             <label class="form-check-label" for="historySelectAllCheckbox">Pilih Semua</label>
                         </div>
                         <button class="btn btn-sm btn-danger" id="deleteSelectedHistoryBtn" disabled>
-                            <i class="fa-solid fa-trash-alt me-1"></i> Hapus Yang Dipilih
+                            <i class="fa-solid fa-trash-alt me-1"></i> Hapus
                         </button>
                     </div>
                     <div class="card-body">
