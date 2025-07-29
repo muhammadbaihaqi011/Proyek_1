@@ -1,9 +1,9 @@
 <?php
 // Konfigurasi Database
 $db_host = 'localhost';
-$db_user = 'root'; // Sesuaikan dengan username database Anda
-$db_pass = '';     // Sesuaikan dengan password database Anda
-$db_name = 'fokus_selesai'; // Sesuaikan dengan nama database Anda
+$db_user = 'root'; 
+$db_pass = '';     
+$db_name = 'fokus_selesai'; 
 
 // Buat koneksi
 $conn = new mysqli($db_host, $db_user, $db_pass, $db_name);

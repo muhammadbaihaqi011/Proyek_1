@@ -177,6 +177,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             from { opacity: 0; transform: translateY(-20px); }
             to { opacity: 1; transform: translateY(0); }
         }
+
+        /* Password toggle specific styles */
+        .password-toggle-container {
+            position: relative;
+        }
+        .password-toggle-icon {
+            position: absolute;
+            right: 15px;
+            top: 70%;
+            transform: translateY(-50%);
+            cursor: pointer;
+            color: var(--text-color-light);
+        }
     </style>
 </head>
 <body>
@@ -195,9 +208,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <label for="username" class="form-label">Username</label>
                 <input type="text" class="form-control" id="username" name="username" required autocomplete="username">
             </div>
-            <div class="mb-3">
+            <div class="mb-3 password-toggle-container">
                 <label for="password" class="form-label">Password</label>
                 <input type="password" class="form-control" id="password" name="password" required autocomplete="current-password">
+                <i class="fa-solid fa-eye password-toggle-icon" id="togglePassword"></i>
             </div>
             <div class="d-grid gap-2">
                 <button type="submit" class="btn btn-primary btn-lg">Login</button>
@@ -208,5 +222,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const togglePassword = document.getElementById('togglePassword');
+            const password = document.getElementById('password');
+
+            if (togglePassword && password) {
+                togglePassword.addEventListener('click', function () {
+                    // Toggle the type attribute
+                    const type = password.getAttribute('type') === 'password' ? 'text' : 'password';
+                    password.setAttribute('type', type);
+
+                    // Toggle the eye icon
+                    this.classList.toggle('fa-eye');
+                    this.classList.toggle('fa-eye-slash');
+                });
+            }
+        });
+    </script>
 </body>
 </html>

@@ -29,7 +29,7 @@ $user_id = get_user_id();
 $username = get_username();
 
 // Ambil data user beserta avatar
-$user_data_query = $conn->prepare("SELECT id, username, avatar FROM users WHERE id = ?");
+$user_data_query = $conn->prepare("SELECT id, username, avatar FROM users WHERE user_id = ?"); //
 if ($user_data_query === false) {
     error_log("Error preparing user data query: " . $conn->error);
     $user_data = ['username' => 'Pengguna', 'avatar' => null]; // Fallback
@@ -56,7 +56,8 @@ $display_month = isset($_GET['display_month']) ? (int)$_GET['display_month'] : (
 $display_year = isset($_GET['display_year']) ? (int)$_GET['display_year'] : (int)$now->format('Y');
 
 // Create a DateTime object for the first day of the display month
-$display_date_obj = (clone $display_date_obj)->modify('first day of this month');
+$display_date_obj = (new DateTime("{$display_year}-{$display_month}-01"))->setTime(0, 0, 0); // Reset time to avoid issues with database comparisons
+
 
 // Determine the Monday of the week containing the first day of the display month
 // This will be the start of our calendar display for the week rows
@@ -75,8 +76,8 @@ $month_end_full = (clone $display_date_obj)->modify('last day of this month')->f
 
 $dates_with_activity = [];
 
-// Query untuk tanggal tugas di bulan ini
-$stmt_task_dates_month = $conn->prepare("SELECT DISTINCT DATE(deadline) as tanggal FROM tugas WHERE user_id = ? AND deadline BETWEEN ? AND ?");
+// Query untuk tanggal tugas di bulan ini (hanya tugas yang BELUM selesai)
+$stmt_task_dates_month = $conn->prepare("SELECT DISTINCT DATE(deadline) as tanggal FROM tugas WHERE user_id = ? AND status != 'selesai' AND deadline BETWEEN ? AND ?");
 if ($stmt_task_dates_month) {
     $stmt_task_dates_month->bind_param("iss", $user_id, $month_start_full, $month_end_full);
     $stmt_task_dates_month->execute();
@@ -89,8 +90,8 @@ if ($stmt_task_dates_month) {
     error_log("Error preparing monthly task dates query: " . $conn->error);
 }
 
-// Query untuk tanggal acara di bulan ini
-$stmt_event_dates_month = $conn->prepare("SELECT DISTINCT tanggal FROM acara WHERE user_id = ? AND tanggal BETWEEN ? AND ?");
+// Query untuk tanggal acara di bulan ini (hanya acara yang AKAN DATANG atau HARI INI)
+$stmt_event_dates_month = $conn->prepare("SELECT DISTINCT tanggal FROM acara WHERE user_id = ? AND tanggal >= CURDATE() AND tanggal BETWEEN ? AND ?");
 if ($stmt_event_dates_month) {
     $date_month_start_only = date('Y-m-d', strtotime($month_start_full));
     $date_month_end_only = date('Y-m-d', strtotime($month_end_full));
@@ -137,7 +138,9 @@ if ($stmt_all_events) {
     error_log("Error preparing all events query: " . $conn->error);
 }
 
-// --- History Data ---
+// --- History Data --- (These queries are no longer used for rendering the history section,
+//                      but remain here if other parts of the application might rely on them.
+//                      They are effectively 'dead code' for the current dashboard view).
 $completed_tasks = [];
 $stmt_completed_tasks = $conn->prepare("SELECT id, nama_tugas, deskripsi, deadline, status FROM tugas WHERE user_id = ? AND status = 'selesai' ORDER BY deadline DESC");
 if ($stmt_completed_tasks === false) { error_log("Error preparing completed tasks query: " . $conn->error); } else {
@@ -168,7 +171,7 @@ $err_tugas = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_tugas'])) {
     $nama = trim($_POST['nama_tugas'] ?? '');
     $desk = trim($_POST['deskripsi_tugas'] ?? '');
-    $deadline = $_POST['deadline_tugas'] ?? '';
+    $deadline = $_POST['deadline_tugas'] ?? ''; 
 
     if (empty($nama) || empty($deadline)) {
         $err_tugas = 'Nama tugas & deadline wajib diisi!';
@@ -203,44 +206,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             echo json_encode(['success' => true, 'new_status' => $new_status]);
         } else {
             echo json_encode(['success' => false, 'message' => 'Gagal update status: ' . $stmt->error]);
-            error_log("Error updating task status (AJAX): " . $stmt->error);
+            error_log("Error updating task status: " . $stmt->error);
         }
         $stmt->close();
     } else {
-        echo json_encode(['success' => false, 'message' => 'Gagal menyiapkan query update status (AJAX): ' . $conn->error]);
-        error_log("Error preparing update status query (AJAX): " . $conn->error);
+        echo json_encode(['success' => false, 'message' => 'Gagal menyiapkan query update status: ' . $conn->error]);
+        error_log("Error preparing update status query: " . $conn->error);
     }
     exit;
 }
 
 // PROSES DELETE TUGAS (MELALUI AJAX)
+// Perubahan ini harusnya sudah diimplementasikan sebelumnya dari diskusi Anda.
+// Saya akan membiarkannya tetap karena ini adalah cara yang lebih baik untuk menghapus banyak ID.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_task') {
-    $task_ids = $_POST['id']; // Bisa berupa satu ID atau array ID
-    if (!is_array($task_ids)) {
-        $task_ids = [$task_ids];
+    $task_ids_raw = $_POST['id'];
+    
+    if (!is_array($task_ids_raw) || empty($task_ids_raw)) {
+        echo json_encode(['success' => false, 'message' => 'Tidak ada ID tugas yang diberikan.', 'deleted_ids' => []]);
+        exit;
     }
     
     $success = true;
     $message = [];
+    $deleted_ids = [];
 
-    foreach ($task_ids as $task_id) {
-        $stmt = $conn->prepare("DELETE FROM tugas WHERE id = ? AND user_id = ?");
-        if ($stmt) {
-            $stmt->bind_param("ii", $task_id, $user_id);
-            if (!$stmt->execute()) {
+    $clean_task_ids = array_map('intval', $task_ids_raw);
+    $ids_in_clause = implode(',', $clean_task_ids);
+
+    $query = "DELETE FROM tugas WHERE id IN ($ids_in_clause) AND user_id = ?";
+    $stmt = $conn->prepare($query);
+
+    if ($stmt) {
+        $stmt->bind_param("i", $user_id);
+
+        if ($stmt->execute()) {
+            $deleted_count = $stmt->affected_rows;
+            if ($deleted_count > 0) {
+                $deleted_ids = $clean_task_ids; 
+                $success = true;
+            } else {
                 $success = false;
-                $message[] = "ID {$task_id}: " . $stmt->error;
-                error_log("Error deleting task (AJAX), ID {$task_id}: " . $stmt->error);
+                $message[] = "Tidak ada tugas yang cocok atau sudah dihapus.";
             }
-            $stmt->close();
         } else {
             $success = false;
-            $message[] = "Gagal menyiapkan query hapus tugas: " . $conn->error;
-            error_log("Error preparing delete task query (AJAX): " . $conn->error);
-            break; // Hentikan jika persiapan query gagal
+            $message[] = "Gagal menghapus tugas: " . $stmt->error;
+            error_log("Error deleting tasks (AJAX - IN clause): " . $stmt->error);
         }
+        $stmt->close();
+    } else {
+        $success = false;
+        $message[] = "Gagal menyiapkan query hapus tugas: " . $conn->error;
+        error_log("Error preparing delete tasks query (AJAX - IN clause): " . $conn->error);
     }
-    echo json_encode(['success' => $success, 'message' => implode("; ", $message), 'deleted_ids' => $task_ids]);
+    
+    echo json_encode(['success' => $success, 'message' => implode("; ", $message), 'deleted_ids' => $deleted_ids]);
     exit;
 }
 
@@ -279,7 +300,7 @@ $err_acara = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_acara'])) {
     $nama = trim($_POST['nama_acara'] ?? '');
     $desk = trim($_POST['deskripsi_acara'] ?? '');
-    $tanggal = $_POST['tanggal_acara'] ?? '';
+    $tanggal = $_POST['tanggal_acara'] ?? ''; // Use 'tanggal_acara' for consistency with input name
 
     if (empty($nama) || empty($tanggal)) {
         $err_acara = 'Nama acara & tanggal wajib diisi!';
@@ -303,33 +324,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_acara'])) {
 }
 
 // PROSES DELETE ACARA (MELALUI AJAX)
+// Perubahan ini harusnya sudah diimplementasikan sebelumnya dari diskusi Anda.
+// Saya akan membiarkannya tetap karena ini adalah cara yang lebih baik untuk menghapus banyak ID.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_event') {
-    $event_ids = $_POST['id']; // Bisa berupa satu ID atau array ID
-    if (!is_array($event_ids)) {
-        $event_ids = [$event_ids];
+    $event_ids_raw = $_POST['id'];
+    if (!is_array($event_ids_raw) || empty($event_ids_raw)) {
+        echo json_encode(['success' => false, 'message' => 'Tidak ada ID acara yang diberikan.', 'deleted_ids' => []]);
+        exit;
     }
 
     $success = true;
     $message = [];
+    $deleted_ids = [];
 
-    foreach ($event_ids as $event_id) {
-        $stmt = $conn->prepare("DELETE FROM acara WHERE id = ? AND user_id = ?");
-        if ($stmt) {
-            $stmt->bind_param("ii", $event_id, $user_id);
-            if (!$stmt->execute()) {
+    // Sanitasi setiap ID dan pastikan itu integer
+    $clean_event_ids = array_map('intval', $event_ids_raw);
+
+    $ids_in_clause = implode(',', $clean_event_ids);
+    $query = "DELETE FROM acara WHERE id IN ($ids_in_clause) AND user_id = ?";
+    $stmt = $conn->prepare($query);
+
+    if ($stmt) {
+        $stmt->bind_param("i", $user_id);
+
+        if ($stmt->execute()) {
+            $deleted_count = $stmt->affected_rows;
+            if ($deleted_count > 0) {
+                $deleted_ids = $clean_event_ids;
+                $success = true;
+            } else {
                 $success = false;
-                $message[] = "ID {$event_id}: " . $stmt->error;
-                error_log("Error deleting event (AJAX), ID {$event_id}: " . $stmt->error);
+                $message[] = "Tidak ada acara yang cocok atau sudah dihapus.";
             }
-            $stmt->close();
         } else {
             $success = false;
-            $message[] = "Gagal menyiapkan query hapus acara: " . $conn->error;
-            error_log("Error preparing delete event query (AJAX): " . $conn->error);
-            break;
+            $message[] = "Gagal menghapus acara: " . $stmt->error;
+            error_log("Error deleting events (AJAX - IN clause): " . $stmt->error);
         }
+        $stmt->close();
+    } else {
+        $success = false;
+        $message[] = "Gagal menyiapkan query hapus acara: " . $conn->error;
+        error_log("Error preparing delete events query (AJAX - IN clause): " . $conn->error);
     }
-    echo json_encode(['success' => $success, 'message' => implode("; ", $message), 'deleted_ids' => $event_ids]);
+    
+    echo json_encode(['success' => $success, 'message' => implode("; ", $message), 'deleted_ids' => $deleted_ids]);
     exit;
 }
 
@@ -1448,72 +1487,6 @@ unset($_SESSION['error_message']);
             <?php endif; ?>
         </div>
       </div>
-
-      <div class="card animate__animated animate__fadeInRight mb-4">
-        <div class="card-header">
-            <span class="me-auto"><i class="fa-solid fa-history me-2"></i> Riwayat Tugas & Acara Selesai</span>
-            <div class="form-check form-check-inline me-2">
-                <input class="form-check-input history-select-all-checkbox" type="checkbox" id="historySelectAllCheckbox">
-                <label class="form-check-label" for="historySelectAllCheckbox">Pilih Semua</label>
-            </div>
-            <button class="btn btn-sm btn-danger" id="deleteSelectedHistoryBtn" disabled>
-                <i class="fa-solid fa-trash-alt me-1"></i> Hapus Yang Dipilih
-            </button>
-        </div>
-        <div class="card-body">
-            <?php if (empty($completed_tasks) && empty($past_events)): ?>
-                <div class="text-muted small no-items-message">Tidak ada riwayat tugas atau acara.</div>
-            <?php else: ?>
-                <h6 class="mt-2 mb-2">Tugas Selesai:</h6>
-                <?php if (empty($completed_tasks)): ?>
-                    <div class="text-muted small mb-3">Tidak ada tugas yang selesai.</div>
-                <?php else: ?>
-                    <ul class="list-group mb-3" id="completedTasksList">
-                        <?php foreach($completed_tasks as $t): ?>
-                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;" data-id="<?= $t['id'] ?>" data-type="task">
-                                <div class="history-item-content">
-                                    <h5 class="mb-0 text-decoration-line-through text-muted"><?= esc($t['nama_tugas']) ?></h5>
-                                    <p class="small text-muted mb-1">
-                                        Selesai pada: <?= esc(tgl_indo_edlink(date('Y-m-d', strtotime($t['deadline'])))) ?>, Pukul <?= date('H:i', strtotime($t['deadline'])) ?>
-                                    </p>
-                                    <?php if (!empty($t['deskripsi'])): ?>
-                                        <p class="small"><?= esc($t['deskripsi']) ?></p>
-                                    <?php endif; ?>
-                                    <span class="status-badge status-selesai">Selesai</span>
-                                </div>
-                                <div class="history-item-actions">
-                                    <input type="checkbox" class="history-checkbox" data-id="<?= $t['id'] ?>" data-type="task">
-                                </div>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-
-                <h6 class="mt-4 mb-2">Acara yang Telah Berlalu:</h6>
-                <?php if (empty($past_events)): ?>
-                    <div class="text-muted small">Tidak ada acara yang telah berlalu.</div>
-                <?php else: ?>
-                    <ul class="list-group" id="pastEventsList">
-                        <?php foreach($past_events as $a): ?>
-                            <li class="list-group-item d-flex justify-content-between align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;" data-id="<?= $a['id'] ?>" data-type="event">
-                                <div class="history-item-content">
-                                    <h5 class="mb-0"><?= esc($a['nama_acara']) ?></h5>
-                                    <p class="small text-muted mb-1">Tanggal: <?= esc(tgl_indo_edlink($a['tanggal'])) ?></p>
-                                    <?php if (!empty($a['deskripsi'])): ?>
-                                        <p class="small"><?= esc($a['deskripsi']) ?></p>
-                                    <?php endif; ?>
-                                    <span class="badge bg-secondary text-white">Selesai</span>
-                                </div>
-                                <div class="history-item-actions">
-                                    <input type="checkbox" class="history-checkbox" data-id="<?= $a['id'] ?>" data-type="event">
-                                </div>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-            <?php endif; ?>
-        </div>
-      </div>
     </div>
   </div>
 </div>
@@ -1708,6 +1681,7 @@ unset($_SESSION['error_message']);
                     .then(response => {
                         if (!response.ok) {
                             throw new Error('Network response for cek_notif.php was not ok');
+                            // No need for return res.json() if you throw here
                         }
                         return response.json();
                     })
@@ -1790,6 +1764,7 @@ unset($_SESSION['error_message']);
                 .then(res => {
                     if (!res.ok) {
                         throw new Error('Network response for cek_notif.php was not ok');
+                        // No need for return res.json() if you throw here
                     }
                     return res.json();
                 })
@@ -1803,6 +1778,7 @@ unset($_SESSION['error_message']);
                     const todayDateString = today.toISOString().split('T')[0]; // Format YYYY-MM-DD
 
                     // Filter dan tampilkan notifikasi di navbar & desktop
+                    // Data tugas yang akan datang atau yang lewat deadline (status belum selesai)
                     data.tugas.forEach(t => {
                         // Periksa tugas yang tepat pada tanggalnya (deadline)
                         const taskDeadlineDate = t.deadline ? t.deadline.split(' ')[0] : ''; // Ambil hanya tanggalnya (YYYY-MM-DD)
@@ -1920,12 +1896,8 @@ unset($_SESSION['error_message']);
                 dataType: 'json',
                 success: function(response) {
                     if (response.success) {
-                        // For single deletion from task list / event list
-                        $(`li[data-id="${id}"][data-type="${type}"]`).fadeOut(300, function() {
-                            $(this).remove();
-                            // Reload after animation complete
-                             location.reload(); 
-                        });
+                        // Reload setelah animasi complete atau langsung jika tidak ada fadeout
+                        location.reload(); 
                     } else {
                         alert(`Gagal menghapus ${type === 'task' ? 'tugas' : 'acara'}: ` + response.message);
                     }
@@ -2040,147 +2012,9 @@ unset($_SESSION['error_message']);
         });
 
         // ===========================================
-        // NEW JAVASCRIPT FOR HISTORY DELETION
+        // Bagian JavaScript untuk fitur "Riwayat Tugas & Acara Selesai" sepenuhnya Dihapus
         // ===========================================
-
-        const historySelectAllCheckbox = $('#historySelectAllCheckbox');
-        const deleteSelectedHistoryBtn = $('#deleteSelectedHistoryBtn');
-        const historyCheckboxes = $('.history-checkbox'); // Semua checkbox di riwayat
-
-        function updateDeleteSelectedButtonState() {
-            const checkedCount = historyCheckboxes.filter(':checked').length;
-            if (checkedCount > 0) {
-                deleteSelectedHistoryBtn.prop('disabled', false);
-            } else {
-                deleteSelectedHistoryBtn.prop('disabled', true);
-            }
-        }
-
-        // Event listener untuk checkbox "Pilih Semua"
-        historySelectAllCheckbox.on('change', function() {
-            historyCheckboxes.prop('checked', this.checked);
-            updateDeleteSelectedButtonState();
-        });
-
-        // Event listener untuk setiap checkbox riwayat
-        historyCheckboxes.on('change', function() {
-            updateDeleteSelectedButtonState();
-            // Jika ada checkbox yang tidak tercentang, batalkan centang "Pilih Semua"
-            if (!this.checked) {
-                historySelectAllCheckbox.prop('checked', false);
-            } else {
-                // Jika semua checkbox tercentang, centang "Pilih Semua"
-                if (historyCheckboxes.length === historyCheckboxes.filter(':checked').length) {
-                    historySelectAllCheckbox.prop('checked', true);
-                }
-            }
-        });
-
-        // Event listener untuk tombol "Hapus Yang Dipilih"
-        deleteSelectedHistoryBtn.on('click', function() {
-            const selectedTaskIds = [];
-            const selectedEventIds = [];
-
-            historyCheckboxes.filter(':checked').each(function() {
-                const id = $(this).data('id');
-                const type = $(this).data('type');
-                if (type === 'task') {
-                    selectedTaskIds.push(id);
-                } else if (type === 'event') {
-                    selectedEventIds.push(id);
-                }
-            });
-
-            if (selectedTaskIds.length === 0 && selectedEventIds.length === 0) {
-                alert('Tidak ada item yang dipilih untuk dihapus.');
-                return;
-            }
-
-            if (!confirm('Yakin ingin menghapus item-item yang dipilih dari riwayat?')) {
-                return;
-            }
-
-            let deletionsPending = 0;
-            let deletionsCompleted = 0;
-            const totalDeletions = selectedTaskIds.length + selectedEventIds.length;
-
-            if (selectedTaskIds.length > 0) {
-                deletionsPending++;
-                $.ajax({
-                    url: 'dashboard.php',
-                    type: 'POST',
-                    data: {
-                        action: 'delete_task',
-                        id: selectedTaskIds // Kirim array ID
-                    },
-                    dataType: 'json',
-                    traditional: true, // Penting untuk mengirim array ID
-                    success: function(response) {
-                        deletionsCompleted++;
-                        if (response.success) {
-                            selectedTaskIds.forEach(id => {
-                                $(`li[data-id="${id}"][data-type="task"]`).fadeOut(300, function() {
-                                    $(this).remove();
-                                });
-                            });
-                        } else {
-                            alert('Gagal menghapus beberapa tugas: ' + response.message);
-                        }
-                        if (deletionsCompleted === totalDeletions) {
-                            location.reload(); // Refresh halaman setelah semua selesai
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        deletionsCompleted++;
-                        console.error("AJAX Error deleting tasks:", status, error);
-                        alert('Terjadi kesalahan saat menghapus tugas.');
-                        if (deletionsCompleted === totalDeletions) {
-                            location.reload();
-                        }
-                    }
-                });
-            }
-
-            if (selectedEventIds.length > 0) {
-                deletionsPending++;
-                $.ajax({
-                    url: 'dashboard.php',
-                    type: 'POST',
-                    data: {
-                        action: 'delete_event',
-                        id: selectedEventIds // Kirim array ID
-                    },
-                    dataType: 'json',
-                    traditional: true, // Penting untuk mengirim array ID
-                    success: function(response) {
-                        deletionsCompleted++;
-                        if (response.success) {
-                            selectedEventIds.forEach(id => {
-                                $(`li[data-id="${id}"][data-type="event"]`).fadeOut(300, function() {
-                                    $(this).remove();
-                                });
-                            });
-                        } else {
-                            alert('Gagal menghapus beberapa acara: ' + response.message);
-                        }
-                        if (deletionsCompleted === totalDeletions) {
-                            location.reload(); // Refresh halaman setelah semua selesai
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        deletionsCompleted++;
-                        console.error("AJAX Error deleting events:", status, error);
-                        alert('Terjadi kesalahan saat menghapus acara.');
-                        if (deletionsCompleted === totalDeletions) {
-                            location.reload();
-                        }
-                    }
-                });
-            }
-        });
-
-        // Inisialisasi awal tombol Hapus Yang Dipilih
-        updateDeleteSelectedButtonState();
+        // Karena bagian HTML-nya telah dihapus, kode JavaScript ini juga tidak diperlukan.
 
     }); // END of $(document).ready(function() { ... });
 </script>
