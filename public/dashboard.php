@@ -1589,21 +1589,6 @@ unset($_SESSION['error_message']);
                     <i class="fa-solid fa-moon"></i>
                 </button>
                 <div class="dropdown">
-                    <button class="btn position-relative" id="notifDropdown" data-bs-toggle="dropdown" aria-expanded="false" style="color:white;">
-                        <i class="fa-solid fa-bell fa-lg"></i>
-                        <span id="notif-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="display:none;">!</span>
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="notifDropdown" style="min-width:260px;">
-                        <li><span class="dropdown-item-text fw-bold">Notifikasi</span></li>
-                        <li>
-                            <hr class="dropdown-divider">
-                        </li>
-                        <li>
-                            <div id="notif-area" class="small text-muted px-3">Tidak ada notifikasi baru.</div>
-                        </li>
-                    </ul>
-                </div>
-                <div class="dropdown">
                     <button class="btn d-flex align-items-center gap-2 text-white" id="profileDropdown" data-bs-toggle="dropdown" aria-expanded="false" style="background:transparent;">
                         <img id="avatar-img" src="<?= $avatar_path ?>" class="profile-img" alt="Foto Profil">
                         <span class="fw-semibold"><i class="fa-solid fa-user me-1"></i> <?= esc($username) ?></span>
@@ -1628,7 +1613,7 @@ unset($_SESSION['error_message']);
                             <hr class="dropdown-divider">
                         </li>
                         <li><button class="dropdown-item" id="showStatsBtn" type="button"><i class="fa-solid fa-chart-bar me-2"></i> Statistik Mingguan</button></li>
-                        <?php if (get_user_id() == 1): // Tampilkan hanya jika user adalah admin (user_id = 1) 
+                        <?php if (get_user_id() == 1): // Tampilkan hanya jika user adalah admin (user_id = 1)
                         ?>
                             <li>
                                 <hr class="dropdown-divider">
@@ -1846,8 +1831,9 @@ unset($_SESSION['error_message']);
                     </div>
                     <div class="card-body">
                         <?php if (empty($all_events)): ?>
-                            <div class="text-muted small no-items-message">Tidak ada acara yang tersedia.</div <?php else: ?>
-                                <ul class="list-group">
+                            <div class="text-muted small no-items-message">Tidak ada acara yang tersedia.</div>
+                        <?php else: ?>
+                            <ul class="list-group">
                             <?php foreach ($all_events as $a): ?>
                                 <?php if (strtotime($a['tanggal']) >= strtotime(date('Y-m-d'))): ?>
                                     <li class="list-group-item d-flex align-items-center shadow-sm mb-1 animate__animated animate__fadeInUp" style="border-radius:12px;" data-id="<?= $a['id'] ?>" data-type="event">
@@ -2187,6 +2173,7 @@ unset($_SESSION['error_message']);
                     modalBody.innerHTML = '<canvas id="weeklyChartModalCanvas" height="180"></canvas>';
                 });
             }
+
 
             // --- NOTIFIKASI DESKTOP DAN NAVBAR ---
             function showDesktopNotification(title, body) {
