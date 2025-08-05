@@ -1632,7 +1632,7 @@ unset($_SESSION['error_message']);
 
     <div class="welcome-section text-center">
         <div class="container welcome-section-content animate__animated animate__fadeInDown">
-            <h1>Halo, <?= esc($username) ?>!</h1>
+            <h1>Selamat Datang, <?= esc($username) ?>!</h1>
             <p class="animate__animated animate__fadeInUp"><?= esc($mot_today) ?></p>
         </div>
     </div>
